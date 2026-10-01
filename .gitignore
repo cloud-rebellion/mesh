@@ -16,3 +16,6 @@
 # HISTORY, so a single `git add -A` would carry them into every future publish
 # and only a filter-repo strip could remove them again. Ignored at the source.
 .claude/
+
+# local design-hook state (holds workspace paths); never publish via the mirror
+.impeccable/

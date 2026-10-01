@@ -117,7 +117,10 @@ body.update-available .panel-inner { padding-top: 72px; }
   inset: 0;
   display: block;
   cursor: grab;
+  touch-action: none; /* app.js takes every finger: one pans or drags a note, two pinch */
 }
+/* hidden under the 3D view: gone, so it takes no pointer events and costs no compositing */
+#stage[hidden] { display: none; }
 #stage.panning { cursor: grabbing; }
 #stage.hovering { cursor: pointer; }
 #stage3d {
@@ -184,6 +187,7 @@ body.update-available .panel-inner { padding-top: 72px; }
   transition: color .15s, background .15s;
 }
 .view:hover { color: var(--fg); }
+.view:disabled { color: var(--faint); cursor: not-allowed; } /* 3D with no WebGL2: the title says why */
 .view.active {
   color: var(--bg);
   background: var(--accent);
@@ -220,6 +224,7 @@ body.update-available .panel-inner { padding-top: 72px; }
   transition: opacity .12s, transform .12s cubic-bezier(.16,1,.3,1);
 }
 .card.hidden { opacity: 0; transform: translateY(-4px); pointer-events: none; }
+.card.peek { pointer-events: none; }
 .card .swatch {
   display: inline-block;
   width: 9px; height: 9px;
