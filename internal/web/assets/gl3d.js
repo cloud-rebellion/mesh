@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Bright Interaction AB
 // mesh ui 3D galaxy: a raw WebGL2 renderer (no three.js, no CDN, no deps). A real
 // spiral galaxy: community clusters strung along spiral arms on a thin disc that
-// slowly turns (differential rotation, inner faster), a blazing multi-layer core
-// bulge with dust lanes cutting the arms, a dense twinkling field-star disc, a real
+// slowly turns (rigidly, against the arms' wind, so they trail), a dense star-packed
+// core bulge with dust lanes cutting the arms, a dense twinkling field-star disc, a real
 // bloom post-process (HDR-ish bright-pass + separable blur + tonemapped composite),
 // and a cinematic fly-in on open. Falls back to direct rendering if bloom FBOs are
 // unavailable. Exposed as window.Mesh3D.init(canvas, G, opts) -> api | null.
@@ -61,20 +61,20 @@
     return [(parseInt(h.slice(0, 2), 16) || 0) / 255, (parseInt(h.slice(2, 4), 16) || 0) / 255, (parseInt(h.slice(4, 6), 16) || 0) / 255];
   }
 
-  // differential rotation about Y: inner radii turn faster, like a real galaxy. The
-  // SAME formula is used in the shaders and in JS picking, so clicks stay accurate.
+  // the disc's turn about Y. Rigid, as in 2D: with the old inner-faster shear the trailing
+  // arms wound ~3.9 rad tighter a minute and were rings within a few. omega < 0 turns it
+  // against the arms' wind (see armAngle), so they trail. The SAME formula runs in the
+  // shaders and in JS picking, so clicks stay accurate.
   const SPIN_GLSL = `
   vec3 spin(vec3 p, float t, float omega){
-    float r = length(p.xz);
-    if (r < 0.001 || omega == 0.0) return p;
-    float a = t * omega * (0.4 + 30.0 / (r + 18.0));
+    if (omega == 0.0) return p;
+    float a = t * omega;
     float c = cos(a), s = sin(a);
     return vec3(p.x * c - p.z * s, p.y, p.x * s + p.z * c);
   }`;
   function spinJS(x, y, z, t, omega) {
-    const r = Math.hypot(x, z);
-    if (r < 0.001 || omega === 0) return [x, y, z];
-    const a = t * omega * (0.4 + 30.0 / (r + 18.0));
+    if (omega === 0) return [x, y, z];
+    const a = t * omega;
     const c = Math.cos(a), s = Math.sin(a);
     return [x * c - z * s, y, x * s + z * c];
   }
@@ -85,6 +85,25 @@
   // (numbers before strings), never input order. Each group owns [s0,s1) of its arm,
   // sized by its note count. groups: [{id, size}] -> Map id -> {arm, s0, s1}.
   const GAL_ARMS = 3;
+  // The spiral both galaxies wind (app.js reads it), so a cluster sits on the same stretch
+  // of the same arm in 2D and 3D. u: radius over the disc radius. Logarithmic past the
+  // bulge (u >> ARM_CORE): an arm turns ARM_TWIST rad per e-fold of radius, ~1.35 turns
+  // from the bulge edge to the rim (a ~14 degree pitch, as tight as Astra's), with a small per-arm
+  // wobble in offset and twist so the spiral reads as grown, not stamped. The angle grows
+  // outward: clockwise on screen (2D, y down; 3D, seen from above). Both discs turn the
+  // other way (galaxyAngle falls, SPIN < 0), so the arms trail, as real ones do.
+  const ARM_TWIST = 4.0, ARM_CORE = 0.05, ARM_WOBBLE = [0, 0.106, 0.061], ARM_GAIN = [1, 0.95, 1.05];
+  function armAngle(arm, u) {
+    const k = arm % 3;
+    return arm * Math.PI * 2 / GAL_ARMS + ARM_WOBBLE[k] + ARM_TWIST * ARM_GAIN[k] * Math.log(1 + Math.max(0, u) / ARM_CORE);
+  }
+  // where along its arm a note at s of the arm's length (0 core, 1 rim) sits, as u: from
+  // the bulge's edge out, spaced wider toward the rim, so the arms thin out there
+  const ARM_U0 = 0.09, ARM_THIN = 1.25;
+  const armU = (s) => ARM_U0 + (1 - ARM_U0) * Math.pow(Math.min(1, Math.max(0, s)), ARM_THIN);
+  // an arm's half-width across (in u) at u: it widens outward far slower than the gaps
+  // between the arms do (those grow ~0.69 u), so the arms stay distinct and slim at the rim
+  const ARM_W = (u) => 0.012 + 0.06 * u;
   function byGroupId(a, b) {
     const na = typeof a === "number", nb = typeof b === "number";
     if (na && nb) return a - b;
@@ -238,7 +257,13 @@
     frag = vec4(c, 1.0);
   }`;
 
-  const SPIN = 0.04; // disc angular-speed base (inner clusters turn faster)
+  // the disc's turn per unit of spinTime (which runs 1.8 a second): ~3.5 min a turn, as
+  // the 2D galaxy's. Negative: against the arms' wind, so they trail (see armAngle)
+  const SPIN = -0.0167;
+  // the spin is rigid, so it repeats every turn: spinTime wraps there (as time does at
+  // DRIFT_PERIOD) and stays precise in the float32 uniform. Unwrapped, a long-open tab's
+  // shader disc rounds away from where the JS picking (float64) puts it.
+  const SPIN_PERIOD = 2 * Math.PI / Math.abs(SPIN);
   // the image sits up a touch (the near rim projects larger than the far one): clip y
   // gains LENS_UP, so the galaxy centre, and the haze + vignette with it, sit LENS_UP/2
   // above the middle in texture space
@@ -285,7 +310,9 @@
     const comms = groupList.map((c) => c.id);
     const commRank = new Map(comms.map((id, i) => [id, i]));
     const C = Math.max(1, comms.length);
-    const DISC_R = 165, DISC_THICK = 13, ARM_WIND = 2.2; // ARM_WIND matches the field-star spiral
+    // 155, not 165: the tighter arms carry notes out to the rim, and at the rest framing a
+    // tip swung to the near side ran off the screen's edge
+    const DISC_R = 155, DISC_THICK = 13;
     const ARMS = GAL_ARMS; // the 2D galaxy's count, so a cluster sits on the same arm in both
     const TWO_PI = Math.PI * 2;
     // Each group owns a segment of one arm, sized by its note count (packArms). A
@@ -298,24 +325,21 @@
     const segIds = comms.concat([...gCount.keys()].filter((id) => !commRank.has(id)));
     for (const id of segIds) if (!commRank.has(id)) commRank.set(id, commRank.size);
     const seg = packArms(segIds.map((id) => ({ id, size: gCount.get(id) || 0 })), ARMS);
-    // A cluster owns an arm and a radius band along it. armAngle() winds the angle with
-    // radius on the SAME spiral as the field stars, so nodes spread along the band trace
-    // the arm (the gravitational flow) instead of forming an isolated ball. The inner
-    // ring is pushed out of the core so the disc reads spread, not piled at the center.
+    // A cluster owns an arm and a stretch along it (armU), wound on the SAME ridge as the
+    // field stars (armAngle of the radius before any scatter), so its notes trace the arm
+    // instead of forming an isolated ball, and sit on the ridge, not in the dust lane
+    // beside it. jit: a small per-cluster nudge along the arm.
     function clusterGeom(commId) {
       const k = commRank.has(commId) ? commRank.get(commId) : C - 1;
       const sg = seg.get(commId) || { arm: k % ARMS, s0: 0.92, s1: 1 };
       const rf = (sg.s0 + sg.s1) / 2;
-      const rCenter = DISC_R * (0.26 + 0.74 * rf);
-      const armBase = sg.arm * (TWO_PI / ARMS) + (rand(k * 13 + 1) - 0.5) * 0.14;
-      return { k, arm: sg.arm, rf, rCenter, armBase, s0: sg.s0, s1: sg.s1 };
+      const rCenter = DISC_R * armU(rf);
+      const jit = (rand(k * 13 + 1) - 0.5) * 0.14;
+      return { k, arm: sg.arm, rf, rCenter, jit, s0: sg.s0, s1: sg.s1 };
     }
-    // the field stars' ridge (radius = DISC_R * (0.06 + 0.98 t), angle + t * ARM_WIND),
-    // solved for t: notes wound on plain r/DISC_R sat ~0.1 rad ahead, in the dust lane
-    function armAngle(armBase, r) { return armBase + ((r / DISC_R - 0.06) / 0.98) * ARM_WIND; }
     function centroid(commId) {
       const g = clusterGeom(commId);
-      const a = armAngle(g.armBase, g.rCenter);
+      const a = armAngle(g.arm, g.rCenter / DISC_R) + g.jit;
       const cy = (rand(g.k * 7 + 3) - 0.5) * DISC_THICK * (0.35 + 0.65 * (1 - g.rf));
       return [Math.cos(a) * g.rCenter, cy, Math.sin(a) * g.rCenter];
     }
@@ -329,25 +353,19 @@
       let x, y, z;
       if (isSun) { x = 0; y = 0; z = 0; }
       else {
-        // Each cluster is a TANGENTIAL arc: its notes spread along the direction of
-        // rotation (an arc at near-constant radius) with a little radial thickness, so
-        // the cluster lies along the orbital flow instead of pointing at the center like
-        // a spoke. Its center still sits on the spiral arm, so the arms still wind.
-        // Spread each note WIDELY along its spiral arm so the dots scatter through the
-        // galaxy and float among the field stars instead of forming a tight clump. The
-        // angle winds with the note's own radius (armAngle), so the scatter follows the
-        // arm's curve (aligned with rotation, not a spoke), with gentle cross-arm jitter
-        // for body. Same spiral formula as the field stars, so the notes intermix.
-        // The note sits somewhere along its group's arm segment, with a soft gaussian
-        // scatter across the arm and out of the plane that widens toward the rim; one in
-        // ten strays into the inter-arm dark so the arms have feathered edges.
+        // The note sits somewhere along its group's arm segment, wound on the ridge at
+        // that radius (as the field stars are), then scattered off it: across the arm by
+        // a radial gaussian (the arm is tight, so a radius step is nearly square to it),
+        // a little along it, and out of the plane. One in ten strays into the inter-arm
+        // dark so the arms have feathered edges.
         const cg = clusterGeom(g);
         const s = cg.s0 + (cg.s1 - cg.s0) * rand(i * 3 + 1);
         const gss = (a, b, c) => (rand(a) + rand(b) + rand(c) - 1.5) / 1.5;
         const stray = rand(i * 23 + 7) < 0.1 ? 2.6 : 1;
-        const rr = Math.max(14, DISC_R * (0.26 + 0.74 * s) + gss(i * 13 + 4, i * 17 + 6, i * 19 + 8) * (5 + 5 * s) * stray);
+        const u = armU(s);
+        const rr = Math.max(14, DISC_R * (u + gss(i * 13 + 4, i * 17 + 6, i * 19 + 8) * ARM_W(u) * stray));
         const rad = Math.min(1, rr / DISC_R);
-        const a = armAngle(cg.armBase, rr) + gss(i * 5 + 9, i * 7 + 10, i * 29 + 11) * (0.12 + 0.12 * rad) * stray;
+        const a = armAngle(cg.arm, u) + cg.jit + gss(i * 5 + 9, i * 7 + 10, i * 29 + 11) * 0.12 * stray;
         x = Math.cos(a) * rr;
         y = gss(i * 11 + 5, i * 31 + 12, i * 37 + 13) * DISC_THICK * 0.62 * (0.55 + 0.6 * (1 - rad)) * (stray > 1 ? 1.6 : 1);
         z = Math.sin(a) * rr;
@@ -419,12 +437,11 @@
       const ox = (rand(k * 29 + 2) - 0.5) * 16, oz = (rand(k * 37 + 4) - 0.5) * 16;
       neb.push({ p: [c[0] + ox, c[1] + (rand(k * 5 + 1) - 0.5) * 5, c[2] + oz], s: 6 + rand(k * 9) * 9, c: [0.95, 0.42, 0.6] });
     }
-    // continuous teal disc glow: soft cyan gas spread around the mid-disc so the
-    // arms read as a luminous sheet (the dominant Andromeda hue), not dark gaps.
+    // teal gas along the arms (the dominant Andromeda hue), so they read as luminous
+    // lanes; the gaps between them stay dark
     for (let k = 0; k < 24; k++) {
-      const a = (k / 24) * TWO_PI + (rand(k * 61 + 1) - 0.5) * 0.55;
-      const rr = DISC_R * (0.32 + 0.52 * rand(k * 23 + 3));
-      neb.push({ p: [Math.cos(a) * rr, (rand(k * 7 + 2) - 0.5) * 5, Math.sin(a) * rr], s: 15 + rand(k * 13) * 16, c: [0.3, 0.78, 0.97] });
+      const u = 0.3 + 0.55 * rand(k * 23 + 3), a = armAngle(k % ARMS, u) + (rand(k * 61 + 1) - 0.5) * 0.3, rr = DISC_R * u;
+      neb.push({ p: [Math.cos(a) * rr, (rand(k * 7 + 2) - 0.5) * 5, Math.sin(a) * rr], s: 12 + rand(k * 13) * 12, c: [0.3, 0.78, 0.97] });
     }
     // pink dust-lane zone hugging the bulge: the warm magenta the reference shows
     // between the white core and the teal arms.
@@ -436,13 +453,15 @@
     // glowing gas at each arm's tip. The rim glows the approved look shows were every
     // singleton group's clouds piled where the smallest groups pack (the ends of the
     // arms); with those gone this keeps them, at 8 bright clouds an arm instead of ~48.
+    // They sit just inside the rim, so at rest framing a tip swung to the near side glows
+    // on screen rather than half past its edge.
     const tipCols = [[0.95, 0.5, 0.75], [0.45, 0.82, 0.97], [0.72, 0.6, 0.95], [1.0, 0.78, 0.6]];
     for (let a = 0; a < ARMS; a++) {
       for (let j = 0; j < 8; j++) {
-        const rr = DISC_R * (0.95 + 0.06 * rand(a * 17 + j * 5 + 3));
-        const an = armAngle(a * (TWO_PI / ARMS), rr) + (rand(a * 29 + j * 11 + 1) - 0.5) * 0.14;
+        const rr = DISC_R * (0.88 + 0.06 * rand(a * 17 + j * 5 + 3));
+        const an = armAngle(a, rr / DISC_R) + (rand(a * 29 + j * 11 + 1) - 0.5) * 0.14;
         const c = tipCols[j % 4]; // x4: the brightness of the piled clouds, baked into the colour
-        neb.push({ p: [Math.cos(an) * rr + (rand(a * 31 + j * 7 + 1) - 0.5) * 20, (rand(a * 3 + j) - 0.5) * 7, Math.sin(an) * rr + (rand(a * 43 + j * 3 + 3) - 0.5) * 20], s: 9 + rand(a * 19 + j * 3) * 13, c: [c[0] * 4, c[1] * 4, c[2] * 4] });
+        neb.push({ p: [Math.cos(an) * rr + (rand(a * 31 + j * 7 + 1) - 0.5) * 14, (rand(a * 3 + j) - 0.5) * 7, Math.sin(an) * rr + (rand(a * 43 + j * 3 + 3) - 0.5) * 14], s: 9 + rand(a * 19 + j * 3) * 13, c: [c[0] * 4, c[1] * 4, c[2] * 4] });
       }
     }
     const NEB = neb.length;
@@ -450,21 +469,24 @@
     neb.forEach((d, i) => { npos[i * 3] = d.p[0]; npos[i * 3 + 1] = d.p[1]; npos[i * 3 + 2] = d.p[2]; nsize[i] = d.s; ncol[i * 3] = d.c[0]; ncol[i * 3 + 1] = d.c[1]; ncol[i * 3 + 2] = d.c[2]; });
     const nebVAO = makeSprites(npos, nsize, ncol, nflag);
 
-    // core bulge (denser + brighter than before, for a blazing core)
-    const BULGE = 150;
+    // core bulge: a dense swarm of warm stars, exponentially thicker toward the centre and
+    // a squashed sphere, so the core is many stars the arms grow out of, not one sun with
+    // a dark ring round it
+    const BULGE = 1400;
     const bpos = new Float32Array(BULGE * 3), bsize = new Float32Array(BULGE), bcol = new Float32Array(BULGE * 3), bflag = new Float32Array(BULGE);
     for (let i = 0; i < BULGE; i++) {
-      const a = rand(i * 3 + 1) * TWO_PI, u = rand(i * 7 + 2), r = Math.pow(u, 0.6) * 17;
-      bpos[i * 3] = Math.cos(a) * r * 1.18; bpos[i * 3 + 1] = (rand(i * 11 + 3) - 0.5) * 3.2 * (1 - u); bpos[i * 3 + 2] = Math.sin(a) * r;
-      bsize[i] = 1.1 + rand(i * 5) * 1.8;
-      const warm = 0.9 + rand(i * 9) * 0.1;
-      bcol[i * 3] = warm; bcol[i * 3 + 1] = warm * 0.94; bcol[i * 3 + 2] = warm * 0.84;
+      const a = rand(i * 3 + 1) * TWO_PI, r = -7.5 * Math.log(1 - 0.98 * rand(i * 7 + 2)), el = (rand(i * 11 + 3) - 0.5) * 2;
+      bpos[i * 3] = Math.cos(a) * r * Math.sqrt(1 - el * el * 0.6); bpos[i * 3 + 1] = el * r * 0.42; bpos[i * 3 + 2] = Math.sin(a) * r * Math.sqrt(1 - el * el * 0.6);
+      bsize[i] = (0.6 + rand(i * 5) * 0.9) * (rand(i * 13 + 4) > 0.94 ? 1.8 : 1);
+      const warm = (0.62 + rand(i * 9) * 0.38) * Math.max(0.45, 1 - r / 40);
+      const pink = rand(i * 17 + 5) > 0.85;
+      bcol[i * 3] = warm; bcol[i * 3 + 1] = warm * (pink ? 0.78 : 0.93); bcol[i * 3 + 2] = warm * (pink ? 0.84 : 0.8);
     }
     const bulgeVAO = makeSprites(bpos, bsize, bcol, bflag);
 
     // blazing core corona: concentric warm halos + a near-white centre (intensity
     // baked into the colour, since all are one instanced draw).
-    const corona = [[6, 1.2, [1.0, 0.99, 0.97]], [19, 0.8, [1.0, 0.96, 0.88]], [40, 0.38, [1.0, 0.93, 0.82]], [72, 0.15, [0.95, 0.92, 0.86]], [115, 0.06, [0.78, 0.84, 0.95]]];
+    const corona = [[6, 1.0, [1.0, 0.99, 0.97]], [15, 0.55, [1.0, 0.96, 0.88]], [34, 0.3, [1.0, 0.93, 0.82]], [72, 0.15, [0.95, 0.92, 0.86]], [115, 0.06, [0.78, 0.84, 0.95]]];
     const CORO = corona.length;
     const cpos = new Float32Array(CORO * 3), csize = new Float32Array(CORO), ccol = new Float32Array(CORO * 3), cflag = new Float32Array(CORO);
     corona.forEach((c, i) => { csize[i] = c[0]; const g = c[1]; ccol[i * 3] = c[2][0] * g; ccol[i * 3 + 1] = c[2][1] * g; ccol[i * 3 + 2] = c[2][2] * g; });
@@ -509,24 +531,31 @@
     const starVAO = makeSprites(spos, ssize, scol, sflag);
 
     // dense disc field stars tracing the arms, with DUST LANES (a dim band offset
-    // from each arm ridge so the arms read as dusty, not uniform).
+    // from each arm ridge so the arms read as dusty, not uniform). Spaced wider toward the
+    // rim (t), so the arms thin out there; scattered across the arm by ARM_W, as the notes
+    // are; one in twelve drifts loose as faint dust between the arms.
     const FIELD = 11000;
     const fpos = new Float32Array(FIELD * 3), fsize = new Float32Array(FIELD), fcol = new Float32Array(FIELD * 3), fflag = new Float32Array(FIELD);
     for (let i = 0; i < FIELD; i++) {
       const arm = i % ARMS;
-      const t = Math.sqrt(rand(i * 3 + 1));
-      const radius = DISC_R * (0.06 + 0.98 * t);
+      const t = Math.pow(rand(i * 3 + 1), 1.3);
+      const u = 0.05 + 0.99 * t, radius = DISC_R * u;
       const s1 = rand(i * 7 + 2) - 0.5, s2 = rand(i * 11 + 3) - 0.5;
       const scatter = (s1 + s2) * 0.42;
-      const angle = arm * (TWO_PI / ARMS) + t * ARM_WIND + scatter;
-      const rr = radius + (rand(i * 13 + 4) - 0.5) * (6 + 12 * t);
+      const loose = rand(i * 31 + 9) < 0.08;
+      const angle = armAngle(arm, u) + scatter + (loose ? (rand(i * 37 + 5) - 0.5) * 2.0 : 0);
+      const rr = radius + (rand(i * 13 + 4) + rand(i * 41 + 7) - 1) * 1.4 * DISC_R * ARM_W(u);
       fpos[i * 3] = Math.cos(angle) * rr;
       fpos[i * 3 + 1] = (rand(i * 5 + 6) - 0.5) * DISC_THICK * (0.45 + 0.55 * (1 - t)) + (s1 + s2) * 2.0;
       fpos[i * 3 + 2] = Math.sin(angle) * rr;
-      // dust lane: a darker band a touch ahead of the arm ridge
+      // dust lane: a darker band just off the arm ridge on its concave (inner) side, where
+      // a real trailing arm's dust runs
       const lane = Math.abs(scatter - 0.16) < 0.055 ? 0.22 : 1.0;
-      fsize[i] = (0.55 + rand(i * 17) * 0.9) * (lane < 1 ? 0.7 : 1);
-      const w = (0.5 + rand(i * 23) * 0.42) * lane;
+      fsize[i] = (0.55 + rand(i * 17) * 0.9) * (lane < 1 ? 0.7 : 1) * (loose ? 0.8 : 1);
+      // toward the rim fewer stars, but the odd one flares (the sparkle at Astra's arm tips)
+      const flare = rand(i * 43 + 11) < 0.012 + 0.03 * t ? 1.9 : 1;
+      if (flare > 1) fsize[i] *= 1.6;
+      const w = (0.5 + rand(i * 23) * 0.42) * lane * (loose ? 0.45 : 1) * flare;
       const rad = Math.min(1, rr / DISC_R);            // 0 core .. 1 rim
       const roll = rand(i * 19);
       if (roll > 0.88) { // pink HII / dust-edge stars threaded through the arms
@@ -621,15 +650,17 @@
     const fin = (v, d) => (Number.isFinite(v) ? v : d);
     const cam = saved
       ? { yaw: fin(saved.yaw, 0.6), pitch: Math.max(-1.45, Math.min(1.45, fin(saved.pitch, 0.38))), dist: Math.max(20, Math.min(1800, fin(saved.dist, REST_DIST))), cx: fin(saved.cx, 0), cy: fin(saved.cy, 0), cz: fin(saved.cz, 0) }
-      : { yaw: still ? 0.6 : 2.0, pitch: 0.38, dist: still ? REST_DIST : 820, cx: 0, cy: 0, cz: 0 };
+      : { yaw: still ? 0.6 : -0.8, pitch: 0.38, dist: still ? REST_DIST : 820, cx: 0, cy: 0, cz: 0 };
     const vel = { yaw: 0, pitch: 0 };
     let W = 1, H = 1, ins = 0, dpr = 1, proj = perspective(FOVY, 1, 1, 4000), vp = viewMatrix(cam.yaw, cam.pitch, cam.dist, 0, 0, 0);
     // firstHit: the pick of a click sequence's first click, which a double-click is judged by.
     // hoverIdx is the star under the cursor, selIdx the selected one; the selection
     // keeps the highlight, so moving the mouse off a focused star no longer drops it.
+    // A hover is only ever what is under the pointer now: a wheel, pan, orbit, fly, jump
+    // or resize drops it, card and cursor too (dropHover), as 2D's does.
     let drag = false, panning = false, lx = 0, ly = 0, downX = 0, downY = 0, moved = false, firstHit = -1, hoverIdx = -1, selIdx = -1, renderPitch = cam.pitch;
     // the clocks carry over too, so the disc, the field stars and the drift do not jump
-    let time = saved ? fin(saved.time, 0) % DRIFT_PERIOD : 0, spinTime = saved ? fin(saved.spinTime, 0) : 0;
+    let time = saved ? fin(saved.time, 0) % DRIFT_PERIOD : 0, spinTime = saved ? fin(saved.spinTime, 0) % SPIN_PERIOD : 0;
     // userCam: zoomed or panned since the last recenter, so a resize must not refit.
     let introT = 0, introDone = still || !!saved, focusIdx = -1, anim = null, userCam = !!(saved && saved.userCam);
     // focusMoved: panned or zoomed (or cut the fly-in short) while a note is focused, so
@@ -637,7 +668,9 @@
     // star's last position, so the camera can ride its drift.
     let focusMoved = false, lastP = null;
     // idle orbit: after a few quiet seconds the camera drifts slowly around the disc
-    // (~95 s a lap), easing in; any input stops it dead.
+    // (~130 s a lap), easing in; any input stops it dead. Its yaw grows, which on screen
+    // turns the disc the way it spins (counterclockwise seen from above), so the arms
+    // still trail and the two add up (~80 s an apparent turn) rather than cancel out.
     let idleT = 0, autoYaw = 0, lensX = 0, lastNow = 0;
     const touch = () => { idleT = 0; autoYaw = 0; };
     // only a real gesture cuts the fly-in short (a moved drag, a pan, a pinch, a fly to a
@@ -671,6 +704,7 @@
     canvas.addEventListener("webglcontextrestored", onRestored);
 
     function resize() {
+      dropHover(); // the projection changes under the pointer
       dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
       W = window.innerWidth; H = window.innerHeight;
       canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
@@ -690,11 +724,15 @@
     resize();
 
     // hitR: the hit radius in px for a dot of a given on-screen radius (a tap passes
-    // TAP_R); the cursor's is the dot itself, never under 9
-    function pickAt(mx, my, hitR) {
+    // TAP_R); the cursor's is the dot itself, never under 9. prefer: a star that wins while
+    // it is still within reach (the one whose card shows), else the nearest does
+    function pickAt(mx, my, hitR, prefer) {
       const v = viewMatrix(cam.yaw, renderPitch, cam.dist, cam.cx, cam.cy, cam.cz);
       const m = mul(proj, v);
       let best = -1, bestD = Infinity;
+      // the reach grows as SPRITE_VS grows the drawn star: the sun 1.7x with its pulse, the
+      // lit star (selected, else hovered) 1.5x. It tells once a dot passes the 9 px floor.
+      const hi = selIdx >= 0 ? selIdx : hoverIdx, sunK = 1.7 + 0.10 * Math.sin(time * 0.8);
       for (let i = 0; i < N; i++) {
         const sp = worldPos(i);
         const cx = m[0] * sp[0] + m[4] * sp[1] + m[8] * sp[2] + m[12];
@@ -703,7 +741,8 @@
         if (cw <= 0) continue;
         const sx = (cx / cw * 0.5 + 0.5) * W, sy = (1 - (cy / cw * 0.5 + 0.5)) * H;
         const dx = sx - mx, dy = sy - my, d2 = dx * dx + dy * dy;
-        const dot = size[i] * 90 / cw, rad = hitR ? hitR(dot) : Math.max(9, dot);
+        const dot = size[i] * (flag[i] ? sunK : 1) * (i === hi ? 1.5 : 1) * 90 / cw, rad = hitR ? hitR(dot) : Math.max(9, dot);
+        if (d2 <= rad * rad && i === prefer) return i;
         if (d2 <= rad * rad && d2 < bestD) { bestD = d2; best = i; }
       }
       return best;
@@ -723,7 +762,7 @@
       cam.cx += (-dx * cyw + dy * sp * syw) * k;
       cam.cy += dy * cp * k;
       cam.cz += (-dx * syw - dy * sp * cyw) * k;
-      endIntro(); userMoved(); stopAnim(); touch();
+      endIntro(); userMoved(); stopAnim(); touch(); dropHover();
     }
     // a mouse event within a moment of a touch is the browser's echo of that touch (the
     // cancelled pointerdown should stop them; this is the belt to that), never a pick
@@ -742,6 +781,7 @@
     function onUp(e) {
       if (!drag) return; // a mouseup that began off this canvas (the rail, the 2D view) is not a pick
       drag = false;
+      if (hoverIdx < 0) canvas.style.cursor = "grab"; // the gesture's cursor (move, or a pointer the drag dropped) goes with it
       const wasPan = panning; panning = false;
       if (canvas.hidden) return; // the view switched mid-press: nothing under the cursor is ours
       // the second click of a double-click (detail > 1) is onDbl's: the first click's
@@ -749,7 +789,11 @@
       // close the note, or land on a neighbour and open that instead
       if (!moved && !wasPan && e.detail <= 1 && opts.onSelect) {
         const rect = canvas.getBoundingClientRect();
-        const i = pickAt(e.clientX - rect.left, e.clientY - rect.top);
+        // the hovered star wins while still in reach: the disc turns between the hover and
+        // the click, and where two stars' reach meets, the nearest could change hands and
+        // open a note other than the one the card named. Only while that card shows (no
+        // note selected); a camera move since has dropped the hover (dropHover)
+        const i = pickAt(e.clientX - rect.left, e.clientY - rect.top, null, selIdx < 0 ? hoverIdx : -1);
         selIdx = i; firstHit = i; // before onSelect, so the app's focusNode or clearFocus has the last word
         opts.onSelect(i >= 0 ? nodes[i] : null);
       }
@@ -767,7 +811,7 @@
         // a still press is a click, and jitter must not cut a fly-in short (as in 2D).
         // lx,ly stay at the press until then, so the first real step carries it all.
         if (!moved) return;
-        endIntro();
+        endIntro(); dropHover(); // the content moves under the pointer
         const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY;
         if (panning) { pan(dx, dy); return; }
         const dyaw = dx * 0.005, dpitch = dy * 0.005;
@@ -794,6 +838,7 @@
       e.preventDefault(); touch();
       // the intro and a tween own the camera; trackpad momentum must not cut either short
       if (!introDone || anim) return;
+      dropHover(); // the content moves under a still pointer
       const w = wheelOf(e);
       if (w.pan) { pan(-w.dx, -w.dy); return; } // content follows the fingers
       userMoved();
@@ -859,7 +904,7 @@
       // the finger has really travelled (a fingertip jitters more than a cursor), and the
       // first real step then carries the whole way from the press
       if (!tMoved && Math.abs(e.clientX - tDownX) + Math.abs(e.clientY - tDownY) <= TAP_SLOP) return;
-      tMoved = true; endIntro();
+      tMoved = true; endIntro(); dropHover();
       const dyaw = (e.clientX - p.x) * 0.005, dpitch = (e.clientY - p.y) * 0.005;
       p.x = e.clientX; p.y = e.clientY;
       cam.yaw += dyaw; cam.pitch = Math.max(-1.45, Math.min(1.45, cam.pitch + dpitch));
@@ -902,6 +947,16 @@
 
     function setHighlight(id) { selIdx = (id != null && idIndex.has(id)) ? idIndex.get(id) : -1; }
     function setSpotlight(commId) { spotComm = (commId == null) ? -1 : commId; } // legend cluster spotlight
+    // the content moved under a still pointer (or the app switched views or regrouped):
+    // the star the hover named is no longer what is under it, so let it go, its card
+    // (onHover) and its cursor with it; a held drag keeps the gesture's cursor. The next
+    // move picks afresh. The app calls it as clearHover.
+    function dropHover() {
+      if (hoverIdx < 0) return;
+      hoverIdx = -1;
+      if (!drag) canvas.style.cursor = "grab";
+      if (opts.onHover) opts.onHover(null);
+    }
 
     // Fly the camera into a note and lock onto it (the disc spin freezes and the camera
     // rides the note's drift, so it stays put while you read). Reduced motion jumps, and
@@ -914,7 +969,7 @@
       const i = (id != null && idIndex.has(id)) ? idIndex.get(id) : -1;
       if (i < 0) return;
       const held = heldFocus != null && heldFocus === id; heldFocus = null;
-      selIdx = i; focusIdx = i; focusMoved = held; lastP = null; endIntro(); touch();
+      selIdx = i; focusIdx = i; focusMoved = held; lastP = null; endIntro(); touch(); dropHover(); // flown or jumped, it moves
       const sp = worldPos(i), d = held ? cam.dist : 42;
       if (calm() || unseen()) { anim = null; cam.cx = sp[0]; cam.cy = sp[1]; cam.cz = sp[2]; cam.dist = d; return; }
       startAnim(sp, d, null, "focus");
@@ -932,7 +987,7 @@
     // behind a panel): the fly-out used to replay on return, the disc frozen for its ~0.7 s.
     function recenter() {
       const done = () => { focusIdx = -1; };
-      endIntro(); userCam = false; focusMoved = false; heldFocus = null; touch(); // back at rest: a resize refits again
+      endIntro(); userCam = false; focusMoved = false; heldFocus = null; touch(); dropHover(); // back at rest: a resize refits again
       if (!calm() && !unseen()) { startAnim([0, 0, 0], restDist(), done, "rest"); return; }
       anim = null; cam.cx = 0; cam.cy = 0; cam.cz = 0; cam.dist = restDist(); done();
     }
@@ -972,7 +1027,7 @@
       }
 
       drawLayer(coronaVAO, CORO, { soft: 1.2, intensity: 1.0, fog: 0.0, omega: 0 });
-      drawLayer(bulgeVAO, BULGE, { soft: 4.0, halo: 0.1, intensity: 0.8, twinkle: 0.6, fog: 0.3, omega: SPIN });
+      drawLayer(bulgeVAO, BULGE, { soft: 4.0, halo: 0.12, intensity: 0.55, twinkle: 0.6, fog: 0.3, omega: SPIN });
       drawLayer(nodeVAO, N, { soft: 6.2, halo: 0.18, intensity: 1.55, twinkle: 0.85, fog: 0.6, sizeMul: 1.0, hi: selIdx >= 0 ? selIdx : hoverIdx, omega: SPIN, spot: spotComm, float: calm() ? 0 : FLOAT_AMP }); // crisp star profile, same spin as the field stars
       drawLayer(spikeVAO, SPK, { soft: 6.0, intensity: 1.3, twinkle: 0.7, fog: 0.0, omega: 0, spk: 0.6 });
       gl.bindVertexArray(null);
@@ -988,7 +1043,7 @@
       lastNow = now;
       if (!calm()) time = (time + 0.03 * k) % DRIFT_PERIOD; // reduced motion also stills the sun's pulse
       if (focusIdx < 0 && !calm()) { // the disc turns only when not locked on a note (and not under reduced motion)
-        spinTime += 0.03 * k;
+        spinTime = (spinTime + 0.03 * k) % SPIN_PERIOD;
         // a panned target rides the disc at its own radius (the same per-frame turn as the
         // stars there), so the region you panned to stays in view instead of turning away
         if (!anim && (cam.cx || cam.cz)) { const c = spinJS(cam.cx, cam.cy, cam.cz, 0.03 * k, SPIN); cam.cx = c[0]; cam.cz = c[2]; }
@@ -1006,7 +1061,9 @@
         introT += 0.016 * k;
         const p = Math.min(1, introT / 2.8), e = 1 - Math.pow(1 - p, 3);
         cam.dist = 820 - (820 - restDist()) * e;
-        cam.yaw = 2.0 - 1.4 * e;
+        // the yaw grows, as the idle orbit's does: the sweep turns the disc the way it
+        // spins, so the arms trail from the first frame instead of leading, then reversing
+        cam.yaw = -0.8 + 1.4 * e;
         if (p >= 1) introDone = true;
       } else if (anim) {
         anim.t += 0.016 / 0.8 * k;
@@ -1020,7 +1077,7 @@
         cam.yaw += vel.yaw * k; cam.pitch = Math.max(-1.45, Math.min(1.45, cam.pitch + vel.pitch * k));
         const fr = Math.pow(0.94, k); vel.yaw *= fr; vel.pitch *= fr;
         idleT += k;
-        if (idleT > 240 && focusIdx < 0 && !calm()) { autoYaw += (0.0011 - autoYaw) * (1 - Math.pow(0.994, k)); cam.yaw += autoYaw * k; }
+        if (idleT > 240 && focusIdx < 0 && !calm()) { autoYaw += (0.0008 - autoYaw) * (1 - Math.pow(0.994, k)); cam.yaw += autoYaw * k; }
       }
       renderPitch = cam.pitch + (calm() ? 0 : Math.sin(time * 0.18) * 0.03);
       vp = viewMatrix(cam.yaw, renderPitch, cam.dist, cam.cx, cam.cy, cam.cz);
@@ -1109,10 +1166,10 @@
     // is the other half): a lost galaxy draws nothing, so it is let go and re-initialised
     const isLost = () => lost;
 
-    return { frame, resize, dispose, setHighlight, setSpotlight, focusNode, clearFocus, recenter, getCamera, isLost, setData() {} };
+    return { frame, resize, dispose, setHighlight, setSpotlight, clearHover: dropHover, focusNode, clearFocus, recenter, getCamera, isLost, setData() {} };
   }
 
-  // packArms and byGroupId are the one copy: the 2D galaxy deals (and ties) with these,
-  // and its taps follow the same TAP_ rules
-  window.Mesh3D = { init, packArms, byGroupId, GAL_ARMS, TAP_SLOP, DBL_TAP_MS, DBL_TAP_PX, TAP_R };
+  // packArms, byGroupId and the spiral (armAngle, armU, armW) are the one copy: the 2D
+  // galaxy deals, ties and winds with these, and its taps follow the same TAP_ rules
+  window.Mesh3D = { init, packArms, byGroupId, GAL_ARMS, armAngle, armU, armW: ARM_W, TAP_SLOP, DBL_TAP_MS, DBL_TAP_PX, TAP_R };
 })();

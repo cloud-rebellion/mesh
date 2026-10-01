@@ -46,7 +46,7 @@
   let alpha = 1;             // sim energy: cools to a floor, then the sim sleeps (see simStep)
   let simAwake = true, quiet = 0; // quiet: consecutive still steps at the floor
   let settle = null;         // the last dropped note: the sim stays awake until it is back (see simStep)
-  let settleF = 0.3, settleT = 0; // ...back to this net force, for at most this many more steps
+  let settleT = 0;           // ...for at most this many more steps
   let neighborSet = null;
   let spotlight = null; // community id to spotlight (dim the rest); set by the legend
   let drag = null;           // { node, vx, vy } while dragging/flinging a node
@@ -133,6 +133,9 @@
   const groupKeyOf = (n) => (grouping === "domain" ? n.domain : n.community);
   const groupColorOf = (n) => (grouping === "domain" ? domainColor : commColor).get(groupKeyOf(n)) || "#7c766e";
 
+  // the galaxy's spiral, arm packer and tap rules are gl3d.js's (Mesh3D, below), so
+  // without it there is no graph to lay out: say so, rather than stall half-booted
+  if (!window.Mesh3D || typeof window.Mesh3D.packArms !== "function") { fail("its 3D module (gl3d.js) did not load. Reload the page."); return; }
   fetch("graph.json").then((r) => {
     if (!r.ok) throw new Error("graph.json " + r.status);
     return r.json();
@@ -207,6 +210,10 @@
     edgeIdx = new Int32Array(ei);
     deg = new Int32Array(G.nodes.length);
     for (const i of edgeIdx) deg[i]++;
+    // charge: a hub pushes harder, so its burst has room round it. It is the note's mass
+    // too, so a hub moves little when its springs pull (see simStep)
+    chg = new Float64Array(G.nodes.length);
+    for (let i = 0; i < chg.length; i++) chg[i] = 1 + CHARGE * deg[i];
   }
 
   // ---- float: every note drifts on its own slow two-frequency loop ----
@@ -246,18 +253,63 @@
     nebOn = new Uint8Array(gCount);
     [...gSlot].filter(([, k]) => gSize[k] >= 5).sort((a, b) => gSize[b[1]] - gSize[a[1]] || byGroupId(a[0] || 0, b[0] || 0))
       .slice(0, 24).forEach(([, k]) => { nebOn[k] = 1; });
+    // each note's hub: its most-linked neighbour in its own group, if that one has more
+    // links than it (ties by index, so the hubs form a forest rooted at local maxima). Per
+    // group, so a burst stays inside its island: the index links into most groups and
+    // would otherwise haul every island's notes onto itself. Rebuilt on a regroup.
+    par = new Int32Array(G.nodes.length).fill(-1);
+    const over = (p, q) => deg[p] > deg[q] || (deg[p] === deg[q] && p < q);
+    for (let j = 0; j < edgeIdx.length; j += 2) {
+      const a = edgeIdx[j], b = edgeIdx[j + 1];
+      if (nodeSlot[a] !== nodeSlot[b]) continue;
+      if (over(b, a) && (par[a] < 0 || over(b, par[a]))) par[a] = b;
+      if (over(a, b) && (par[b] < 0 || over(a, par[b]))) par[b] = a;
+    }
+    kids = new Int32Array(G.nodes.length);
+    for (const p of par) if (p >= 0) kids[p]++;
+    kidAt0 = new Int32Array(G.nodes.length + 1); kidAt = new Int32Array(G.nodes.length);
+    for (let i = 0; i < kids.length; i++) kidAt0[i + 1] = kidAt0[i] + kids[i];
+    const fill = kidAt0.slice(0, -1);
+    par.forEach((p, i) => { if (p >= 0) kidAt[fill[p]++] = i; });
     // edges inside one group draw in that group's hue; bridges between groups stay
-    // a cool neutral. One path per bucket keeps it to ~K strokes a frame.
+    // a cool neutral. One path per bucket keeps it to ~2K strokes a frame. The force view
+    // draws them as a fine grey-tinted web (web), a note's link to its hub a touch
+    // brighter, so a hub's burst shows its spokes, and the bridges fainter, so the space
+    // between the islands reads dark; the galaxy keeps its faint threads.
     const buckets = new Map();
     for (let j = 0; j < edgeIdx.length; j += 2) {
       const a = edgeIdx[j], b = edgeIdx[j + 1];
-      const key = nodeSlot[a] === nodeSlot[b] ? nodeSlot[a] : -1;
+      const slot = nodeSlot[a] === nodeSlot[b] ? nodeSlot[a] : -1, spoke = par[a] === b || par[b] === a;
+      const key = spoke ? slot - gCount - 1 : slot; // spokes: their own buckets, below -1
       (buckets.get(key) || buckets.set(key, []).get(key)).push(a, b);
     }
-    edgeBuckets = [...buckets].map(([k, list]) => {
-      const c = k < 0 ? null : rgb(gColors[k]);
-      return { slot: k, pairs: list, stroke: c ? `rgba(${c.r},${c.gg},${c.b},0.075)` : "rgba(150,165,205,0.045)" };
+    edgeBuckets = [...buckets].map(([key, list]) => {
+      const spoke = key < -1, k = spoke ? key + gCount + 1 : key, c = k < 0 ? null : rgb(gColors[k]);
+      const wa = spoke ? WEB_A * SPOKE_A : k < 0 ? WEB_A * BRIDGE_A : WEB_A;
+      return { slot: k, pairs: list, stroke: c ? `rgba(${c.r},${c.gg},${c.b},0.075)` : "rgba(150,165,205,0.045)",
+        web: c ? `rgba(${(c.r + 170) >> 1},${(c.gg + 175) >> 1},${(c.b + 195) >> 1},${wa})` : `rgba(165,172,195,${wa * 0.8})` };
     });
+    // the springs (see simStep), per link: strength and rest length. A note's link to its
+    // hub is strong; the rest of its links are a weak web over the lighter end's degree,
+    // and a bridge between groups is weaker still and longer, so it ties islands together
+    // without closing the dark between them. A burst's radius grows with sqrt of its notes. A
+    // leaf rests somewhere across its hub's burst (sqrt of a hash, so they fill it as a disc,
+    // not one hard ring), a hub rests clear of its parent's burst. Every rest length adds
+    // both dots' own radii, so big dots never rest inside each other (a small vault zooms
+    // in to 1.1, where a hub's dot is wider than SPACING).
+    const E = edgeIdx.length >> 1, bR = (i) => BURST * Math.sqrt(kids[i]);
+    eK = new Float64Array(E); eL = new Float64Array(E);
+    for (let e = 0; e < E; e++) {
+      const a = edgeIdx[e * 2], b = edgeIdx[e * 2 + 1], da = deg[a], db = deg[b];
+      const c = par[a] === b ? a : par[b] === a ? b : -1, p = c === a ? b : a;
+      eK[e] = c >= 0 ? K_TREE : K_LINK / Math.min(da, db) * (nodeSlot[a] === nodeSlot[b] ? 1 : K_BRIDGE);
+      eL[e] = SPACING * (c < 0 ? (1 + 0.5 * (bR(a) + bR(b))) * (nodeSlot[a] === nodeSlot[b] ? 1 : BRIDGE_L) : kids[c] ? 1 + bR(p) + bR(c) : LEAF_L + bR(p) * Math.sqrt(rand(c * 53 + 7)))
+        + nodeRadius(G.nodes[a]) + nodeRadius(G.nodes[b]);
+    }
+    // loners: notes with no link, or in a group too small to be a region, keep to homes
+    // scattered across the disc (see seedLayout)
+    loner = new Uint8Array(G.nodes.length);
+    for (let i = 0; i < loner.length; i++) loner[i] = gSize[nodeSlot[i]] <= TINY || !deg[i] ? 1 : 0;
   }
 
   // buildInfluence weights the dragged node (1) and the rings around it, so a galaxy drag
@@ -364,10 +416,10 @@
   let GAL_R = 2300;          // galaxy disc radius, world units: 33.6 * sqrt(N), set in layoutGalaxy
   function seedLayout() {
     // Each group starts as a tight knot at its own spot on a sunflower spiral, the
-    // biggest nearest the middle. The sim then blooms every knot out into an island,
-    // so the opening seconds read as the map unfurling, not a random cloud collapsing.
-    // The index's group goes first, seeded at the origin, so its island forms around
-    // the pinned index.
+    // biggest nearest the middle. The sim then blooms the knots out and the links weave
+    // them into one web, so the opening seconds read as the map unfurling, not a random
+    // cloud collapsing. The index's group goes first, seeded at the origin, round the
+    // pinned index.
     const ig = indexNode ? nodeSlot[nodeIndex.get(indexNode.id)] : -1;
     const order = [...Array(gCount).keys()].sort((a, b) => (b === ig) - (a === ig) || gSize[b] - gSize[a]);
     const seedX = new Float64Array(gCount), seedY = new Float64Array(gCount);
@@ -378,7 +430,9 @@
       cum += gSize[g];
     });
     G.nodes.forEach((n, i) => {
-      const ha = rand(i * 43 + 21) * TAU, hr = 0.25 + 0.8 * Math.sqrt(rand(i * 47 + 22));
+      // a loner's home (in units of the map's radius), scattered across the disc so loners
+      // read as stardust between the islands (a band round the rim read as a hard ring)
+      const ha = rand(i * 43 + 21) * TAU, hr = HOME_R0 + HOME_DR * Math.sqrt(rand(i * 47 + 22));
       n.homeX = Math.cos(ha) * hr; n.homeY = Math.sin(ha) * hr;
       const g = nodeSlot[i], a = rand(i * 3 + 11) * TAU;
       const r = Math.sqrt(rand(i * 5 + 13)) * SPACING * 0.3 * Math.sqrt(gSize[g]);
@@ -391,34 +445,26 @@
   // Galaxy: a face-on spiral. Every group owns a segment of one arm, sized by its note
   // count, so a big cluster streams along the arm instead of piling into a blob, and
   // groups are balanced across the arms (greedy: next-biggest onto the lightest arm).
-  // The arm winds logarithmically, the cross-arm scatter widens with radius, and a
-  // few notes stray into the inter-arm dark so the arms have soft edges. The whole
-  // pattern turns rigidly (galaxyAngle): differential rotation would wind the arms
-  // into rings within minutes. Each note's float drift is what makes it feel alive.
+  // The arms wind logarithmically, ~1.35 turns from the bulge to the rim, slim, spaced
+  // wider toward the rim so they thin out there, with dark gaps between them; a few
+  // notes stray into the gaps so the arms have soft edges. The whole pattern turns
+  // rigidly (galaxyAngle) against the arms' wind, so they trail: differential rotation
+  // would wind them into rings within minutes. Each note's float drift keeps it alive.
   let gSegA = null, gSeg0 = null, gSeg1 = null;
-  // The arm count is the 3D galaxy's (Mesh3D.GAL_ARMS), so a cluster deals onto the same
-  // arm in both; 3 if gl3d.js did not load. Each arm is evenly spaced plus a small
-  // wobble in offset and wind so the spiral reads as grown, not stamped (the three-arm
-  // tuning: offsets 0, 2.2, 4.25 and winds 3.5, 3.2, 3.8), one entry per arm.
-  const ARM_WOBBLE = [0, 0.106, 0.061], ARM_WINDS = [3.5, 3.2, 3.8];
-  const M3A = window.Mesh3D && window.Mesh3D.GAL_ARMS;
-  const GAL_ARMS = Number.isInteger(M3A) && M3A > 0 ? M3A : ARM_WINDS.length;
-  const ARM_OFF = Array.from({ length: GAL_ARMS }, (_, a) => a * TAU / GAL_ARMS + ARM_WOBBLE[a % ARM_WOBBLE.length]);
-  const ARM_WIND = Array.from({ length: GAL_ARMS }, (_, a) => ARM_WINDS[a % ARM_WINDS.length]);
-  const galArmAngle = (arm, r) => ARM_OFF[arm] + ARM_WIND[arm] * Math.log(1 + 3 * r) / Math.log(4);
+  // The arm count and the spiral (angle, where a stretch of arm sits, its width) are the
+  // 3D galaxy's (Mesh3D), so a cluster deals onto the same stretch of the same arm in
+  // both. gl3d.js always loads first (index.html: both deferred, from the same embed),
+  // so these are the one copy, with no stand-ins to drift. u: radius over GAL_R.
+  const M3 = window.Mesh3D;
+  const GAL_ARMS = M3.GAL_ARMS, galArmAngle = M3.armAngle, armU = M3.armU, armW = M3.armW;
   // Deal groups onto arms: the next biggest onto the lightest arm (ties by group id,
   // numbers first, never input order), each owning the stretch [s0, s1) of its arm.
-  // groups: [{id, size}] -> Map id -> {arm, s0, s1}. The 3D galaxy's packArms and its
-  // tie order byGroupId are the one copy, so a group sits on the same arm in both. If
-  // gl3d.js did not load, the groups just take turns round the arms, each along all of it.
-  const byGroupId = (window.Mesh3D && window.Mesh3D.byGroupId) || ((a, b) => (String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0));
-  const packArms = (window.Mesh3D && window.Mesh3D.packArms) || ((groups, arms) => new Map(groups.map((g, i) => [g.id, { arm: i % arms, s0: 0, s1: 1 }])));
-  // a finger's tap follows the 3D galaxy's rules (Mesh3D: slop, double-tap time and reach,
-  // hit radius), so it behaves the same in every view. A pen taps by them in 2D but by the
-  // mouse's in 3D (gl3d routes a pen through its mouse handlers). These stand in if
-  // gl3d.js did not load
-  const M3T = window.Mesh3D || {};
-  const TAP_SLOP = M3T.TAP_SLOP || 8, DBL_TAP_MS = M3T.DBL_TAP_MS || 400, DBL_TAP_PX = M3T.DBL_TAP_PX || 30, TAP_R = M3T.TAP_R || ((dot) => Math.max(20, dot + 12));
+  // groups: [{id, size}] -> Map id -> {arm, s0, s1}.
+  const { packArms, byGroupId } = M3;
+  // a finger's tap follows the 3D galaxy's rules (slop, double-tap time and reach, hit
+  // radius), so it behaves the same in every view. A pen taps by them in 2D but by the
+  // mouse's in 3D (gl3d routes a pen through its mouse handlers)
+  const { TAP_SLOP, DBL_TAP_MS, DBL_TAP_PX, TAP_R } = M3;
   function layoutGalaxy() {
     const N = G.nodes.length;
     GAL_R = 33.6 * Math.sqrt(N); // 2300 at ~4.7k notes; a small vault gets a small, dense disc
@@ -433,28 +479,45 @@
       if (n.id === idx) { n.gal0x = 0; n.gal0y = 0; return; }
       const g = nodeSlot[i];
       const s = gSeg0[g] + (gSeg1[g] - gSeg0[g]) * rand(i * 7 + 1);
-      const r = 0.1 + 0.9 * s;
+      // on the ridge at its stretch of arm, then off it: across the arm by a radial step
+      // (the arm is tight, so that is nearly square to it) and a little along it
+      const u = armU(s);
       const gauss = (rand(i * 11 + 2) + rand(i * 13 + 3) + rand(i * 19 + 4) - 1.5) / 1.5; // ~normal in [-1,1]
       const stray = rand(i * 23 + 5) < 0.12 ? 2.8 : 1;
-      const th = galArmAngle(gSegA[g], r) + gauss * (0.22 + 0.12 * r) * stray;
-      const rr = r * GAL_R * (1 + (rand(i * 29 + 6) - 0.5) * 0.16);
+      const th = galArmAngle(gSegA[g], u) + (rand(i * 29 + 6) - 0.5) * 0.16 * stray;
+      const rr = (u + gauss * armW(u) * stray) * GAL_R;
       n.gal0x = Math.cos(th) * rr; n.gal0y = Math.sin(th) * rr;
     });
     // dust: faint unlabelled arm particles so the disc reads as a galaxy between notes.
     // The count follows the disc area (so N), with a floor so a small vault still has arms.
+    // Spaced wider toward the rim, as the notes are, with the odd brighter grain there (the
+    // sparkle at the arm tips); one in eight drifts loose, fainter, into the gaps.
     dust = []; dustCv = null;
     const D = Math.min(4200, Math.max(600, Math.round(N * 0.9)));
     for (let i = 0; i < D; i++) {
-      const r = 0.04 + 0.96 * Math.sqrt(rand(i * 3 + 101));
-      const gauss = (rand(i * 5 + 102) + rand(i * 7 + 103) - 1) * 1.4;
-      const th = galArmAngle(i % GAL_ARMS, r) + gauss * (0.16 + 0.2 * r) + (rand(i * 11 + 104) < 0.2 ? (rand(i * 13 + 105) - 0.5) * 1.6 : 0);
-      const rr = r * GAL_R * 1.04;
-      const roll = rand(i * 17 + 106);
+      const u = 0.05 + 0.97 * Math.pow(rand(i * 3 + 101), 1.15);
+      const gauss = rand(i * 5 + 102) + rand(i * 7 + 103) - 1;
+      const loose = rand(i * 11 + 104) < 0.12;
+      const th = galArmAngle(i % GAL_ARMS, u) + (rand(i * 29 + 109) - 0.5) * 0.3 + (loose ? (rand(i * 13 + 105) - 0.5) * 1.9 : 0);
+      const rr = (u + gauss * armW(u) * 1.5) * GAL_R * 1.02;
+      const roll = rand(i * 17 + 106), spark = rand(i * 23 + 108) > 0.97 - 0.05 * u;
       dust.push({
         x: Math.cos(th) * rr, y: Math.sin(th) * rr,
-        a: (0.16 + rand(i * 19 + 107) * 0.45) * (1.15 - 0.55 * r),
-        s: rand(i * 23 + 108) > 0.93 ? 1.6 : 1,
+        a: Math.min(1, (0.16 + rand(i * 19 + 107) * 0.45) * (1.15 - 0.55 * u) * (loose ? 0.5 : 1) * (spark ? 1.8 : 1)), // a canvas ignores an alpha over 1
+        s: spark ? 1.6 : 1,
         c: roll > 0.86 ? "#f4a3c8" : roll > 0.62 ? "#ffe6c7" : "#9fe3f2",
+      });
+    }
+    // the bulge: a dense knot of warm stars round the sun, thickest at the centre, that
+    // the arms grow out of (not one bright dot with a dark ring round it)
+    const B = Math.min(1600, Math.max(300, Math.round(N * 0.3)));
+    for (let i = 0; i < B; i++) {
+      const u = -0.06 * Math.log(1 - 0.985 * rand(i * 3 + 201)), a = rand(i * 5 + 202) * TAU, roll = rand(i * 7 + 203);
+      dust.push({
+        x: Math.cos(a) * u * GAL_R, y: Math.sin(a) * u * GAL_R * 0.9,
+        a: (0.36 + rand(i * 11 + 204) * 0.5) * Math.max(0.3, 1 - u * 3.5),
+        s: rand(i * 13 + 205) > 0.9 ? 1.6 : 1,
+        c: roll > 0.8 ? "#ffd0dc" : roll > 0.35 ? "#ffe9cf" : "#fff7ee",
       });
     }
   }
@@ -468,8 +531,9 @@
   let dustCv = null, dustK = 1, dustStale = 0;
   function buildDust() {
     dustStale = 0;
-    const RD = GAL_R * 1.04 + 4;
-    // the galaxy fit frames its 98th percentile radius, which is about GAL_R (see computeFit)
+    const RD = GAL_R * 1.16 + 4; // the outermost grain: (u 1.02 + its arm scatter 0.11) x 1.02
+    // the galaxy fit frames its 98th percentile radius, about GAL_R (see computeFit: a
+    // touch under on a big vault, a touch over on some small ones), so about 1:1
     const zf = Math.min(1.1, Math.max(60, Math.min(W - inset - 120, H - 150)) / (2 * GAL_R));
     dustK = Math.min(zf * dpr, 4096 / (2 * RD));
     const S = Math.ceil(2 * RD * dustK), c = S / 2, px = dustK / zf; // image px per css px at the fit
@@ -489,18 +553,47 @@
   // the force layout through the swirl, so what you click is what is drawn.
   function pos(n) { return view === "galaxy" ? galaxyPos(n) : rot(n.gx, n.gy, swirl); }
 
-  // ---- force sim (graph view): Barnes-Hut repulsion + group pull + springs ----
-  // Repulsion runs on a quadtree (theta 0.9), so every note feels the whole graph at
-  // O(N log N). The old cell-grid cutoff made forces jump at cell borders, and at a
-  // few thousand notes those jumps froze the layout into a visible lattice. A pull
-  // toward each note's group centroid, stronger than the global gravity, is what
-  // opens dark space between the islands. The pools below are reused every tick.
+  // ---- force sim (graph view): Barnes-Hut repulsion + hub springs + a weak web ----
+  // Floaty islands with Obsidian's structure inside. Each note hangs off its hub (its
+  // most-linked neighbour in its group, see buildGroupIndex) on a strong spring, so a
+  // hub's notes gather round it in a star burst: a leaf rests somewhere across the
+  // burst, whose radius grows with sqrt of its notes, and a hub rests clear of its
+  // parent's burst. Every other link in a group is a weak spring over its lighter end's
+  // degree, the fine web inside an island; a bridge between groups is weaker still and
+  // longer, so it ties islands together without closing the dark between them. A pull to
+  // each group's centroid (between the faint one of a single web and the old uniform-
+  // puffball one) makes each group its own island. A spring pulls both ends alike and
+  // each moves by the pull over its mass (its charge), so a 300-link hub holds still
+  // while its notes come to it. Repulsion grows with a note's links, so neighbouring
+  // bursts push apart, and runs on a quadtree (theta 0.9): every note feels the whole
+  // graph at O(N log N), with no cell-border force jumps (a cell grid froze ~4.7k notes
+  // into a visible lattice). A gentle pull to the centre keeps the whole a disc. The
+  // pools are reused every tick.
   const THETA2 = 0.81, REP = 1.6, SOFT2 = (SPACING * 0.3) ** 2;
-  const PULL = 0.004, GRAV = 0.0005, K_IN = 0.022, K_OUT = 0.0009;
-  const TINY = 4; // groups this small have no island to join: they sprinkle across the disc instead
+  // centre gravity, group cohesion, a loner's pull home, the hub / web / bridge springs,
+  // a bridge's rest length (x a web link's) and its draw opacity (x WEB_A)
+  const GRAV = 0.0014, COH = 0.001, PULL = 0.02, K_TREE = 0.5, K_LINK = 0.03, K_BRIDGE = 0.04;
+  const BRIDGE_L = 2.2, BRIDGE_A = 0.35, REGROUP_COH = 8;
+  // charge per link, burst radius per sqrt(note) and a leaf's least rest length (both in
+  // SPACING), the loners' home band (in web radii)
+  const CHARGE = 0.15, BURST = 0.45, LEAF_L = 0.4, HOME_R0 = 0.25, HOME_DR = 0.8;
+  // the cooling floor (see simStep's sleep) and the per-step velocity damping
+  const ALPHA_MIN = 0.015, DAMP = 0.86;
+  // the force view's link web opacity, and a note's link to its hub (x WEB_A): the spokes
+  const WEB_A = 0.3, SPOKE_A = 2.3;
+  const TINY = 4; // groups this small make no island: they keep to homes across the disc
   let qCap = 0, qN = 0, qCx, qCy, qHalf, qM, qX, qY, qBody, qKid;
   const qStack = new Int32Array(8192);
-  let gSize = null, deg = null;
+  let gSize = null, deg = null, chg = null, par = null, kids = null, loner = null, eK = null, eL = null;
+  // a regroup's cohesion boost, easing back to 1: notes of a new group start spread over
+  // the old islands, and at the resting cohesion they stay tangled in one web
+  let cohK = 1;
+  // a grab's local warmth: per-note weight (warmOn) times warmA, cooling as alpha does
+  let warmW = null, warmA = 0;
+  // the dropped note's 30-step window (see simStep): its gap to where it was grabbed at
+  // the window's start (settleD), or, with no grab point, its position then
+  let settleX = 0, settleY = 0, settleK = 0, settleHX = NaN, settleHY = NaN, settleD = 0;
+  let kidAt0 = null, kidAt = null; // each hub's notes: kidAt[kidAt0[p] .. kidAt0[p + 1]]
   function qGrow() {
     const cap = qCap ? qCap * 2 : 16384;
     const f = (old) => { const a = new Float64Array(cap); if (old) a.set(old); return a; };
@@ -527,17 +620,18 @@
     return c;
   }
   // body states: -1 empty leaf, >=0 leaf holding that body, -2 internal
-  function qInsert(b, bx, by) {
+  // a cell's mass is its notes' total charge, its centre their charge-weighted centre
+  function qInsert(b, bx, by, w) {
     let q = 0;
     for (let depth = 0; ; depth++) {
-      qM[q] += 1; qX[q] += bx; qY[q] += by;
+      qM[q] += w; qX[q] += bx * w; qY[q] += by * w;
       const s = qBody[q];
       if (s === -1) { qBody[q] = b; return; }
       if (s >= 0) {
         if (depth > 40) return; // coincident pile: the aggregate keeps its mass
         qBody[q] = -2;
-        const o = G.nodes[s], c = qKidFor(q, o.gx, o.gy);
-        qM[c] += 1; qX[c] += o.gx; qY[c] += o.gy; qBody[c] = s;
+        const o = G.nodes[s], c = qKidFor(q, o.gx, o.gy), ws = chg[s];
+        qM[c] += ws; qX[c] += o.gx * ws; qY[c] += o.gy * ws; qBody[c] = s;
       }
       q = qKidFor(q, bx, by);
     }
@@ -548,18 +642,18 @@
     for (const v of nodes) { if (v.gx < x0) x0 = v.gx; if (v.gx > x1) x1 = v.gx; if (v.gy < y0) y0 = v.gy; if (v.gy > y1) y1 = v.gy; }
     qN = 0;
     qNew((x0 + x1) / 2, (y0 + y1) / 2, Math.max(x1 - x0, y1 - y0) / 2 + 1);
-    for (let i = 0; i < N; i++) qInsert(i, nodes[i].gx, nodes[i].gy);
+    for (let i = 0; i < N; i++) qInsert(i, nodes[i].gx, nodes[i].gy, chg[i]);
 
     gSx.fill(0); gSy.fill(0); gN.fill(0);
     let r2 = 0, rn = 0;
     for (let i = 0; i < N; i++) {
       const s = nodeSlot[i], v = nodes[i];
       gSx[s] += v.gx; gSy[s] += v.gy; gN[s]++;
-      if (gSize[s] > TINY) { r2 += v.gx * v.gx + v.gy * v.gy; rn++; }
+      if (!loner[i]) { r2 += v.gx * v.gx + v.gy * v.gy; rn++; }
     }
-    // Notes in tiny groups would otherwise be shoved out to one ring at the rim (the
-    // repulsion/gravity balance point). Each gets a fixed home scattered across the
-    // disc instead, scaled to the live radius, so they read as stardust between islands.
+    // Loners feel only repulsion and the centre, so they would be shoved out to one hard
+    // ring at the balance point. Each keeps to a fixed home instead, in units of the map's
+    // live radius (its rms radius is ~0.7 of its edge), as stardust between the islands.
     const R = Math.sqrt(r2 / Math.max(1, rn)) * 1.35;
 
     for (let i = 0; i < N; i++) {
@@ -579,30 +673,29 @@
           for (let k = 0; k < 4; k++) { const c = qKid[q * 4 + k]; if (c >= 0 && top < qStack.length) qStack[top++] = c; }
         }
       }
-      const s = nodeSlot[i], n = gN[s];
-      if (gSize[s] <= TINY) {
+      if (loner[i]) {
         v.fx = fx + (v.homeX * R - x) * PULL;
         v.fy = fy + (v.homeY * R - y) * PULL;
       } else {
-        v.fx = fx + (gSx[s] / n - x) * PULL - x * GRAV;
-        v.fy = fy + (gSy[s] / n - y) * PULL - y * GRAV;
+        const s = nodeSlot[i], n = gN[s], coh = COH * cohK;
+        v.fx = fx + (gSx[s] / n - x) * coh - x * GRAV;
+        v.fy = fy + (gSy[s] / n - y) * coh - y * GRAV;
       }
     }
-    // springs, normalised by the lighter endpoint's degree (a 300-link hub would
-    // otherwise haul its whole neighbourhood into a knot); bridges are weaker so
-    // they tie islands together without merging them.
-    for (let j = 0; j < edgeIdx.length; j += 2) {
+    // springs (per-link strength and rest length: buildGroupIndex). Each end moves by the
+    // pull over its mass, so a heavy hub barely moves and its notes come to it.
+    for (let j = 0, e = 0; j < edgeIdx.length; j += 2, e++) {
       const ai = edgeIdx[j], bi = edgeIdx[j + 1], a = nodes[ai], b = nodes[bi];
       const dx = b.gx - a.gx, dy = b.gy - a.gy, d = Math.sqrt(dx * dx + dy * dy) || 1;
-      const k = (nodeSlot[ai] === nodeSlot[bi] ? K_IN : K_OUT) / Math.sqrt(Math.min(deg[ai], deg[bi]) || 1);
-      const f = (d - SPACING) * k, fx = (dx / d) * f, fy = (dy / d) * f;
-      a.fx += fx; a.fy += fy; b.fx -= fx; b.fy -= fy;
+      const f = (d - eL[e]) / d * eK[e], sa = f / chg[ai], sb = f / chg[bi];
+      a.fx += dx * sa; a.fy += dy * sa; b.fx -= dx * sb; b.fy -= dy * sb;
     }
     // the slow swirl is not a force: it is a render-time rigid turn (swirl, in loop), so
     // a settled layout is truly still and the sim can sleep
-    const damp = 0.86;
+    const damp = DAMP;
     let vSum = 0, vMax = 0;
-    for (const v of nodes) {
+    for (let i = 0; i < N; i++) {
+      const v = nodes[i];
       if (drag && v === drag.node) continue;
       if (v === indexNode) { // pinned at the origin like the galaxy sun; a drag springs back
         v.gx *= 0.8; v.gy *= 0.8; v.vx = 0; v.vy = 0;
@@ -610,38 +703,85 @@
         else vMax = Infinity; // still springing home: no sleep, or it would stay off the origin
         continue;
       }
-      let vx = (v.vx + v.fx * alpha) * damp;
-      let vy = (v.vy + v.fy * alpha) * damp;
+      const a = warmW && warmW[i] ? alpha + warmW[i] * warmA : alpha;
+      let vx = (v.vx + v.fx * a) * damp;
+      let vy = (v.vy + v.fy * a) * damp;
       let sp2 = vx * vx + vy * vy;
       if (sp2 > 3600) { const k = 60 / Math.sqrt(sp2); vx *= k; vy *= k; sp2 = 3600; }
       v.vx = vx; v.vy = vy; v.gx += vx; v.gy += vy;
       const s = Math.sqrt(sp2); vSum += s; if (s > vMax) vMax = s;
     }
     if (settle && --settleT <= 0) settle = null; // one dropped note never holds the map awake for long
-    if (alpha > 0.04) alpha *= 0.993; // cools to a floor
+    // a dropped note is back once it stops closing on where it was grabbed (under half a
+    // world unit closer over a 30-step window), or with no grab point once it all but stops:
+    // its own convergence. Its leftover force says nothing (half the map sleeps over 0.3),
+    // and nor does a slow creep at the floor, which held drops to the 900-step cap.
+    if (settle && ++settleK % 30 === 0) {
+      if (settleHX === settleHX) {
+        const d = Math.hypot(settle.gx - settleHX, settle.gy - settleHY);
+        if (settleD - d < 0.5) settle = null; else settleD = d;
+      } else if (Math.hypot(settle.gx - settleX, settle.gy - settleY) < 0.5) settle = null;
+      else { settleX = settle.gx; settleY = settle.gy; }
+    }
+    if (warmW && (warmA *= 0.993) < ALPHA_MIN) warmW = null;
+    cohK = 1 + (cohK - 1) * 0.995;
+    // at the floor it anneals on, slowly, to a third of it (nothing held): a few rim notes
+    // pushed outward for tens of seconds then freeze rather than hold the sim awake (a
+    // late creep kept it up 34 s). A dropped note's own warmth carries it back meanwhile.
+    // wake() lifts it back above the floor.
+    if (alpha <= ALPHA_MIN && !drag) alpha = Math.max(ALPHA_MIN * 0.3, alpha * 0.998);
+    if (alpha > ALPHA_MIN) alpha *= 0.993; // cools to a floor
     // cooled and still for a whole second: sleep, skipping the Barnes-Hut pass that is
     // most of an idle frame. The max check keeps it awake while a flung note is still
-    // moving (one note barely moves the mean). A dropped note starts from rest and, at the
-    // floor, crawls back on the weak group pull, so its speed says little: it is judged
-    // by its net force instead, until that is back to about what it was when it was
-    // grabbed (plenty of notes already sit above the floor's drift when the map sleeps).
-    // The run of still steps catches whatever else a drag left stretched. wake() restarts it.
-    // Still is judged on screen (under ~0.5 px a second on average, ~3 at most) but never
-    // stricter than 0.05 / 0.2 world units a step, so a fitted map sleeps 15 to 18 s in
-    // rather than after its last sub-pixel crawl home (~30 s). Zoomed in past ~0.15 that
-    // floor is the gate (at zoom 1 about 3 px/s mean, 12 at most): a close-up can stop
-    // mid-crawl rather than burn Barnes-Hut passes on the map's slow relaxation, mostly
-    // off screen. (Sooner still leaves more of it for the next wake to release.)
-    else if (drag || vSum / N >= Math.max(0.05, 0.0075 / cam.zoom) || vMax >= Math.max(0.2, 0.045 / cam.zoom) ||
-      (settle && Math.hypot(settle.fx, settle.fy) > settleF)) quiet = 0;
+    // moving (one note barely moves the mean), and a grab's warmth or a dropped note on
+    // its way back hold it too. wake() restarts it. The floor is low (ALPHA_MIN, annealing
+    // on below it): a link web relaxes slowly at its rim, and at 0.04 a few outer notes
+    // still crept past the still line after 50 s. Still is judged on screen (under ~0.5 px
+    // a second on average, ~3 at most) but never stricter than 0.05 / 0.2 world units a
+    // step, so a fitted map sleeps rather than waiting out its last sub-pixel crawl.
+    // Zoomed in past ~0.15 that floor is the gate (at zoom 1 about 3 px/s mean, 12 at
+    // most): a close-up can stop mid-crawl rather than burn Barnes-Hut passes on the map's
+    // slow relaxation, mostly off screen. The map sleeps with some force left (Barnes-Hut
+    // never sums to zero), which is why a grab only warms its own neighbourhood (warmOn).
+    else if (drag || warmW || settle || vSum / N >= Math.max(0.05, 0.0075 / cam.zoom) || vMax >= Math.max(0.2, 0.045 / cam.zoom)) quiet = 0;
     else if (++quiet >= 60) { simAwake = false; settle = null; }
   }
   // wake the force sim with at least this much energy (a real grab, a drop, a regroup, a
   // return to the view)
   function wake(a) { alpha = Math.max(alpha, a); simAwake = true; quiet = 0; }
-  // hold the sim awake until this dropped note's net force is back near its force at the
-  // grab (f0), for at most ~15 s
-  function settleOn(n, f0) { settle = n; settleF = Math.max(0.3, 1.25 * f0); settleT = 900; }
+  // hold the sim awake until this dropped note is back (home: where it was grabbed), for
+  // at most 5 s (its warmth has cooled by then)
+  function settleOn(n, home) {
+    settle = n; settleT = 300; settleK = 0; settleX = n.gx; settleY = n.gy;
+    const h = home && typeof home === "object" ? home : null;
+    settleHX = h ? h.x : NaN; settleHY = h ? h.y : NaN;
+    settleD = h ? Math.hypot(n.gx - h.x, n.gy - h.y) : 0;
+  }
+  // A grab warms the grabbed note's own neighbourhood, not the whole map: its burst (every
+  // note hanging off it, down the forest), its hub, and its links two hops out in its
+  // group, up to WARM_CAP notes. The rest keeps the energy it slept with: a whole-map
+  // wake let every note's leftover force out at once, so each tug moved the whole map.
+  const WARM_CAP = 1500;
+  function warmOn(root) {
+    const w = new Float32Array(G.nodes.length), r = nodeIndex.get(root.id), g = nodeSlot[r], q = [r];
+    w[r] = 1;
+    for (let h = 0; h < q.length && q.length < WARM_CAP; h++) {
+      for (let k = kidAt0[q[h]]; k < kidAt0[q[h] + 1]; k++) { const c = kidAt[k]; if (!w[c]) { w[c] = 1; q.push(c); } }
+    }
+    if (par[r] >= 0 && !w[par[r]]) w[par[r]] = 0.8;
+    let ring = [r], n = q.length;
+    for (const wt of [0.8, 0.4]) {
+      const next = [];
+      for (const a of ring) for (const id of adj.get(G.nodes[a].id) || []) {
+        const b = nodeIndex.get(id);
+        if (nodeSlot[b] !== g || w[b] || n >= WARM_CAP) continue;
+        w[b] = wt; next.push(b); n++;
+      }
+      ring = next;
+    }
+    return w;
+  }
+  function warm(n, a) { warmW = warmOn(n); warmA = Math.max(warmA, a); simAwake = true; quiet = 0; }
 
   // ---- render ----
   let lastFrame = 0, simAcc = 0;
@@ -663,8 +803,9 @@
       const idle = (tn - lastInteract) > 4000;
       if (view === "graph") {
         // slow rigid swirl, ~5.4 min a revolution (the rate the old in-sim swirl settled
-        // at), eased when idle. Rigid: an inner-faster shear tears the islands apart.
-        if (!calm()) swirl += (idle ? 0.00016 : 0.00032) * fk;
+        // at), eased when idle. Rigid: an inner-faster shear tears the bursts apart. It
+        // falls: counterclockwise on screen, the way the galaxy turns
+        if (!calm()) swirl -= (idle ? 0.00016 : 0.00032) * fk;
         // a held note stays under the cursor: its world point is fixed, so as the swirl
         // turns, re-pin it in the unturned frame the sim works in (the sim skips it)
         if (drag) { const g = rot(drag.wx, drag.wy, -swirl); drag.node.gx = g.x; drag.node.gy = g.y; }
@@ -674,7 +815,9 @@
         simAcc += fk;
         if (simAcc >= 0.5) { simAcc = Math.max(-0.5, Math.min(0.5, simAcc - 1)); if (simAwake) simStep(); }
       } else {
-        if (!calm()) galaxyAngle += (idle ? 0.00025 : 0.0005) * fk; // rigid turn, ~3.5 min a revolution; eases when idle
+        // rigid turn, ~3.5 min a revolution, easing when idle. It falls: on screen (y down)
+        // that is counterclockwise, against the arms' clockwise outward wind, so they trail
+        if (!calm()) galaxyAngle -= (idle ? 0.00025 : 0.0005) * fk;
         const back = Math.pow(0.86, fk), pull = 1 - Math.pow(0.68, fk);
         const decay = (n) => {
           if (n.dispX || n.dispY) {
@@ -759,8 +902,11 @@
         ctx.save();
         ctx.translate(ox, oy); ctx.rotate(galaxyAngle); ctx.scale(k, k);
         // zoomed out, the default filter samples a few of every grain's image px and the
-        // grains shimmer in and out as the disc turns; the high one averages them
-        ctx.imageSmoothingQuality = "high";
+        // grains shimmer in and out as the disc turns; the high one averages them. Only
+        // when well shrunk: from a little under 1:1 up (the fitted view among them, which
+        // sits a hair either side of 1:1 by vault) the plain filter reads every grain, and
+        // the high one there cost 30-40 frames over 50 ms in 4 s
+        ctx.imageSmoothingQuality = k * dpr < 0.9 ? "high" : "low";
         ctx.globalAlpha = fade; ctx.drawImage(dustCv, -h, -h);
         ctx.restore();
       }
@@ -786,7 +932,7 @@
     const emph = [];
     ctx.lineWidth = Math.max(0.5, 0.65 * z);
     for (const bk of edgeBuckets) {
-      ctx.strokeStyle = bk.stroke;
+      ctx.strokeStyle = galaxy ? bk.stroke : bk.web;
       ctx.globalAlpha = neighborSet ? 0.45 : (spotlight != null && gSlot.get(spotlight) !== bk.slot ? 0.25 : 1);
       ctx.beginPath();
       const L = bk.pairs;
@@ -794,7 +940,7 @@
         const a = sp[L[j]], b = sp[L[j + 1]];
         if (!on(a, 40) && !on(b, 40)) continue;
         if (neighborSet && (isFocus(nodes[L[j]].id) || isFocus(nodes[L[j + 1]].id))) { emph.push(a, b); continue; }
-        curve(a, b);
+        if (galaxy) curve(a, b); else { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); } // straight spokes read as a burst
       }
       ctx.stroke();
     }
@@ -811,7 +957,7 @@
       const n = nodes[i], s = sp[i];
       if (!on(s, 80)) continue;
       const dim = dimmed(n);
-      const core = nodeRadius(n) * z;
+      const core = dotR(n, z);
       if (n.id === G.meta.index_id) {
         const pulse = 1 + 0.035 * drift * Math.sin(t * 0.02);
         blit(sunSprite, s, Math.max(26, core * 5.5) * pulse, dim ? 0.3 : 0.92); // the sun glow
@@ -829,9 +975,9 @@
       if (!on(s, 10)) continue;
       const dim = dimmed(n);
       const sun = n.id === G.meta.index_id;
-      const r = coreR(n, z) * (sun ? 1 : 0.8 + 0.35 * n.depth);
+      const r = drawnR(n, z);
       const tw = drift ? 0.86 + 0.14 * Math.sin(tc * 1.3 + n.fp1 * 3) : 1;
-      ctx.globalAlpha = dim ? 0.14 : (sun ? 1 : (0.5 + 0.5 * n.depth) * tw);
+      ctx.globalAlpha = dim ? 0.14 : (sun ? 1 : (galaxy ? 0.5 + 0.5 * n.depth : 0.68 + 0.32 * n.depth) * tw);
       ctx.fillStyle = sun ? "#fff6e8" : coreCol[i];
       ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, TAU); ctx.fill();
     }
@@ -864,7 +1010,14 @@
     }
   }
 
-  function coreR(n, z) { return n.id === G.meta.index_id ? Math.max(2, nodeRadius(n) * z) * 1.6 : Math.max(2, nodeRadius(n) * z); }
+  function coreR(n, z) { return n.id === G.meta.index_id ? Math.max(2, dotR(n, z)) * 1.6 : Math.max(2, dotR(n, z)); }
+  // a dot as drawn: coreR, a non-sun dot sized by its depth (0.8 to 1.15x). Drawing and
+  // picking (nodeAt) both read it, so the dot you see is the dot you hit, the sun's rim too
+  function drawnR(n, z) { return coreR(n, z) * (n.id === G.meta.index_id ? 1 : 0.8 + 0.35 * n.depth); }
+  // a note's radius on screen. Force view: never under a floor that grows with sqrt(links),
+  // so a hub reads as a hub at the overview zoom (~0.2 at a few thousand notes), and with
+  // sqrt(zoom), so dots keep pace with the spokes as you zoom in.
+  function dotR(n, z) { const w = nodeRadius(n) * z; return view === "graph" ? Math.max(w, (1 + 0.55 * Math.sqrt(n.degree || 0)) * Math.sqrt(z / 0.2)) : w; }
 
   function measureLabel(n) {
     if (n._lw != null) return;
@@ -968,7 +1121,7 @@
   function fitView() { computeFit(); cam.x = fit.x; cam.y = fit.y; cam.zoom = fit.zoom; fitTick = 10; }
   // hand the camera back to the auto-fit (double-click empty space, "0", a bare Escape);
   // reduced motion jumps there, as the 3D recenter does
-  function refit() { autoFit = true; fitTick = 0; camFollow = null; camReturn = null; if (calm()) fitView(); }
+  function refit() { dropHover(); autoFit = true; fitTick = 0; camFollow = null; camReturn = null; if (calm()) fitView(); }
   // zoom about a screen point, clamped to the size-adaptive limits
   function zoomAt(z, sx, sy) {
     const w = worldAt(sx, sy);
@@ -991,15 +1144,17 @@
   // slop is the hit margin past the dot: generous for hover + click, tight for the
   // press that decides grab vs pan, so a drag across a dense cluster pans the view
   // unless it starts right on a dot. A tap passes TAP_R instead: the hit radius for a
-  // dot of a given on-screen radius.
-  function nodeAt(sx, sy, slop = 6) {
+  // dot of a given on-screen radius. prefer: a note that wins while it is still within reach
+  // (the one whose card shows), else the nearest does.
+  function nodeAt(sx, sy, slop = 6, prefer = null) {
     let best = null, bestD = Infinity;
     for (let i = 0; i < G.nodes.length; i++) {
       const n = G.nodes[i];
       if (query && !matches(n)) continue;
       const s = sp[i]; if (!s) continue;
-      const dot = nodeRadius(n) * cam.zoom, r = typeof slop === "function" ? slop(dot) : dot + slop;
+      const dot = drawnR(n, cam.zoom), r = typeof slop === "function" ? slop(dot) : dot + slop;
       const dd = (s.x - sx) ** 2 + (s.y - sy) ** 2;
+      if (dd <= r * r && n === prefer) return n;
       if (dd <= r * r && dd < bestD) { best = n; bestD = dd; }
     }
     return best;
@@ -1042,11 +1197,23 @@
     if (cp) cp.onclick = () => navigator.clipboard && navigator.clipboard.writeText(joinPath(G.meta.vault, n.path));
   }
   function hideCard() { if (!selected) $("card").classList.add("hidden"); }
+  // the content moved under a still pointer (a wheel, pan, key, refit, fly, view switch
+  // or regroup): the note the hover named is no longer what is under it, so let it go
+  // with its peek card (a selected note's card stays), in both views: gl3d's own goes
+  // through its onHover. The next move picks afresh, so a click never opens a note
+  // other than the one the card names.
+  function dropHover() {
+    if (gl3d) gl3d.clearHover();
+    if (!hover) return;
+    hover = null; canvas.classList.remove("hovering");
+    if (!selected) { setFocus(null); hideCard(); }
+  }
 
   // ---- search ----
   function matches(n) { return !query || (n.label || "").toLowerCase().includes(query) || (n.path || "").toLowerCase().includes(query); }
   function runSearch(q) {
     query = q.trim().toLowerCase();
+    dropHover(); // the filter changes what can be picked, and a match moves the camera
     // a match takes the camera: a lock-on or a glide back out would pull it away again
     if (query) { const f = G.nodes.find(matches); if (f) { const p = pos(f); cam.x = p.x; cam.y = p.y; cam.zoom = Math.max(cam.zoom, 1.6); autoFit = false; camFollow = null; camReturn = null; } }
   }
@@ -1107,7 +1274,7 @@
         if (view === "galaxy") { w.x += n.dispX; w.y += n.dispY; }
         const at = worldAt(p.x, p.y);
         drag = { node: n, vx: 0, vy: 0, wx: w.x, wy: w.y, ox: (w.x - at.x) * cam.zoom, oy: (w.y - at.y) * cam.zoom,
-          warm: false, gx0: n.gx, gy0: n.gy, f0: Math.hypot(n.fx || 0, n.fy || 0) };
+          warm: false, gx0: n.gx, gy0: n.gy };
         // graph: the first real step warms the sim (see pointermove), so a still click to
         // read a note leaves a sleeping map asleep. Galaxy: pull the local cluster elastically.
         if (view !== "graph") drag.influence = buildInfluence(n);
@@ -1126,10 +1293,11 @@
         const d = drag.node;
         if (drag.warm) {
           d.vx = drag.vx; d.vy = drag.vy;
-          if (d === indexNode) settle = null; else settleOn(d, drag.f0);
-          wake(0.1);
+          if (d === indexNode) settle = null; else settleOn(d, { x: drag.gx0, y: drag.gy0 });
+          warm(d, 0.1);
         } else { d.gx = drag.gx0; d.gy = drag.gy0; }
       }
+      if (drag && moved) dropHover(); // the held note springs back, or is flung, from under the still pointer
       drag = null;
       panning = false; canvas.classList.remove("panning");
     };
@@ -1142,7 +1310,7 @@
         // along with the midpoint: what was between the fingers stays between them
         const [a, b] = pts.values(), r = canvas.getBoundingClientRect();
         const d = Math.hypot(a.x - b.x, a.y - b.y) || 1, x = (a.x + b.x) / 2, y = (a.y + b.y) / 2;
-        camFollow = null; camReturn = null; autoFit = false; lastInteract = now();
+        camFollow = null; camReturn = null; autoFit = false; lastInteract = now(); dropHover();
         zoomAt(cam.zoom * d / pinch.d, pinch.x - r.left, pinch.y - r.top);
         cam.x -= (x - pinch.x) / cam.zoom; cam.y -= (y - pinch.y) / cam.zoom;
         pinch.d = d; pinch.x = x; pinch.y = y;
@@ -1167,11 +1335,12 @@
         camFollow = null; camReturn = null; autoFit = false; // a real grab or pan takes manual control back
         const ddx = e.clientX - lastX, ddy = e.clientY - lastY;
         lastX = e.clientX; lastY = e.clientY; lastInteract = now();
-        if (panning) { cam.x -= ddx / cam.zoom; cam.y -= ddy / cam.zoom; return; }
+        if (panning) { cam.x -= ddx / cam.zoom; cam.y -= ddy / cam.zoom; dropHover(); return; }
         const p = local(e), w = worldAt(p.x + drag.ox, p.y + drag.oy);
         drag.wx = w.x; drag.wy = w.y; // galaxy: the loop applies this to the held node's offset
         if (view === "graph") {
-          if (!drag.warm) { drag.warm = true; wake(0.3); } // warm the neighbourhood, do not reshuffle the map
+          // warm the neighbourhood (warmOn), do not reshuffle the map
+          if (!drag.warm) { drag.warm = true; warm(drag.node, 0.12); }
           const g = rot(w.x, w.y, -swirl); // the sim works in the unturned frame
           drag.vx = g.x - drag.node.gx; drag.vy = g.y - drag.node.gy;
           drag.node.gx = g.x; drag.node.gy = g.y; drag.node.vx = 0; drag.node.vy = 0;
@@ -1223,8 +1392,11 @@
       if (e.detail <= 1) clickHit = null; // a fresh click sequence
       if (moved || e.detail > 1) return; // the second click of a double-click is the dblclick's
       if (e.shiftKey) return; // shift+left is a pan: a still one does nothing, as in 3D
+      // the hovered note wins while still in reach: notes drift and turn between the hover
+      // and the click, and where two notes' reach meets the nearest could change hands.
+      // A camera move since has dropped the hover (dropHover)
       const p = local(e);
-      pick(clickHit = nodeAt(p.x, p.y));
+      pick(clickHit = nodeAt(p.x, p.y, 6, hover));
     });
     // double-click empty space: recentre on the index and refit. On a note the first
     // click already flew in and opened it, so there is nothing more to do. Judged by the
@@ -1234,6 +1406,7 @@
       e.preventDefault();
       lastInteract = now();
       camFollow = null; camReturn = null; autoFit = false; // wheeling takes manual control back
+      dropHover(); // the content moves under a still pointer
       const w = wheelIntent(e);
       if (w.pan) { cam.x += w.dx / cam.zoom; cam.y += w.dy / cam.zoom; return; }
       const p = local(e);
@@ -1283,7 +1456,7 @@
       else if (e.key === "0") { e.preventDefault(); refit(); return; }
       else return;
       e.preventDefault();
-      camFollow = null; camReturn = null; autoFit = false; lastInteract = now();
+      camFollow = null; camReturn = null; autoFit = false; lastInteract = now(); dropHover();
     }, true);
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && !running) { running = true; requestAnimationFrame(loop); }
@@ -1304,7 +1477,6 @@
   // init opens on it, so pan, zoom and orbit survive and the fly-in does not replay.
   let gl3dCam = null;
   function initGl3d() {
-    if (!window.Mesh3D) return;
     const dom = grouping === "domain";
     const saved = gl3dCam; gl3dCam = null;
     let inst = null;
@@ -1329,6 +1501,7 @@
       onContextRestored: (c) => {
         if (!inst || gl3d !== inst) return; // a galaxy since replaced
         gl3dCam = c && typeof c === "object" ? c : null;
+        gl3d.clearHover(); // the rebuilt galaxy starts with no hover: its card goes now (a 2D hover stays)
         gl3d.dispose(true); gl3d = null;
         if (view === "galaxy3d") { initGl3d(); if (gl3d) gl3d.resize(); else no3d(); }
       },
@@ -1344,6 +1517,9 @@
   }
   function setView(v) {
     if (v === view) return;
+    // a hover belongs to the view it was picked in, and a key switch leaves the pointer
+    // still: its card would name a note the new view does not show there
+    dropHover();
     if (v === "galaxy3d") {
       // a galaxy whose context is gone and not yet back draws nothing: let it go (on its
       // camera) and init again, which finds the context lost and falls back. Without this
@@ -1369,7 +1545,7 @@
     }
     view = v;
     canvas3d.hidden = true; canvas.hidden = false; // back to the 2D canvas
-    if (v === "graph") wake(0.12); // a gentle stir on return, not a reshuffle
+    if (v === "graph") wake(0.03); // a gentle stir on return, not a reshuffle
     setViewTabs(v); setHint(v);
     // a fresh view opens framed on the index. A note still focused flies in, and a lock on
     // a note since replaced moves to the one being read (as entering 3D does); anything
@@ -1437,12 +1613,13 @@
   // re-read colors via groupColorOf on the next frame.
   function setGrouping(g) {
     if (g === grouping) return;
+    dropHover(); // every note moves to its new group's place, and 3D rebuilds with no hover
     grouping = g;
     spotlight = null;
-    // regroup the 2D views too: the force islands flow into the new groups and the
-    // galaxy re-deals its arms.
+    // regroup the 2D views too: the islands flow into the new groups (each with its own
+    // hubs, buildGroupIndex) and the galaxy re-deals its arms.
     buildGroupIndex(); layoutGalaxy();
-    wake(0.6);
+    wake(0.6); cohK = REGROUP_COH;
     // the rebuilt galaxy (now, or when 3D is next shown) opens on this one's camera; keep
     // the GL context for the re-init
     if (gl3d) { gl3dCam = gl3d.getCamera(); gl3d.dispose(true); gl3d = null; }
@@ -1455,11 +1632,13 @@
     const n = G.nodes.find((x) => x.id === id);
     if (!n) return;
     selected = n; setFocus(n); showCard(n);
+    if (view !== "galaxy3d") dropHover(); // the camera flies (gl3d's focusNode drops its own)
     if (view === "galaxy3d") { if (gl3d) gl3d.focusNode(id); } // fly the camera into the star
     else { if (!camFollow) preFocus = { x: cam.x, y: cam.y, zoom: cam.zoom, auto: autoFit }; camFollow = n; camReturn = null; autoFit = false; lastInteract = now(); }
   }
   function clearFocus2d() {
     if (!camFollow) return;
+    dropHover(); // the camera glides back out
     // a canvas off screen (a feature panel over it, whose loop stands still, or the 3D
     // view) jumps, as gl3d's hidden view does: a glide would play out on return instead
     const jump = calm() || !canvas.clientWidth;
@@ -1529,6 +1708,7 @@
   }
 
   function resize() {
+    dropHover(); // the viewport, and the fit with it, changes under the pointer (gl3d.resize drops its own)
     dpr = Math.max(1, window.devicePixelRatio || 1);
     W = window.innerWidth; H = window.innerHeight;
     // centre the graph in the part of the canvas the rail does not cover (a side
