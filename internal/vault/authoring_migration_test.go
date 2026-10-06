@@ -114,6 +114,67 @@ func TestAuthoringMigrationPreviewApplyArchivesAndPreserves(t *testing.T) {
 	}
 }
 
+func TestAuthoringMigrationKeepsVisibleLegacyLinksWithoutInventingCodeReferences(t *testing.T) {
+	fixedNow(t)
+	fields := []struct {
+		name, original string
+	}{
+		{"do", "do: Check [[fixture-reader]] before acting."},
+		{"dont", "dont: Never stop the fixture owner without authorization."},
+		{"why", "why: Exclusive ownership protects fixture state."},
+	}
+	for _, field := range fields {
+		t.Run(field.name, func(t *testing.T) {
+			root := t.TempDir()
+			request, original := migrationFixture(t, root, "legacy-markup-"+field.name)
+			replacement := field.name + ": |-\n" +
+				"  Read [[real-guidance]] before acting.\n" +
+				"  The literal `[[inline-example]]` is example syntax.\n" +
+				"  ```text\n  [[fenced-example]]\n  ```\n" +
+				"  <!-- [[comment-example]] -->\n" +
+				"  After the example, read [[after-code]]."
+			original = strings.Replace(original, field.original, replacement, 1)
+			if err := os.WriteFile(filepath.Join(root, request.Path), []byte(original), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			preview, err := PreviewAuthoringMigration(context.Background(), root, []MigrationRequest{request})
+			if err != nil {
+				t.Fatal(err)
+			}
+			header, _, _ := SplitFrontmatter(preview.Entries[0].Content)
+			fm, _, err := ParseFrontmatter([]byte(header))
+			if err != nil {
+				t.Fatal(err)
+			}
+			seen := map[string]bool{}
+			for _, id := range fm.Related {
+				seen[id] = true
+			}
+			for _, id := range []string{"previous-note", "additional-evidence", "real-guidance", "after-code"} {
+				if !seen[id] {
+					t.Errorf("lost visible historical relationship %q", id)
+				}
+			}
+			for _, id := range []string{"inline-example", "fenced-example", "comment-example"} {
+				if seen[id] {
+					t.Errorf("invented a relationship from non-content %q", id)
+				}
+			}
+			if t.Failed() {
+				return
+			}
+			receipts, err := ApplyAuthoringMigration(context.Background(), root, preview, MigrationApproval{PreviewHash: preview.Hash, IDs: []string{request.ID}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			archived, err := os.ReadFile(filepath.Join(root, receipts[0].OriginalPath))
+			if err != nil || string(archived) != original {
+				t.Fatalf("literal historical material was not preserved exactly: %v", err)
+			}
+		})
+	}
+}
+
 func TestAuthoringMigrationRejectsUnreviewedDriftTamperingAndRelabeling(t *testing.T) {
 	root := t.TempDir()
 	first, original1 := migrationFixture(t, root, "first")

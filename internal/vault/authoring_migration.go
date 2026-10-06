@@ -237,7 +237,10 @@ func renderMigrationCandidate(fmText string, original *Frontmatter, data []byte,
 	_, body, _ := SplitFrontmatter(string(data))
 	searchable, _ := StripNonContent(body)
 	for _, s := range ReadLegacy(original).AuthoredText() {
-		searchable += "\n" + s
+		// Legacy fields contain Markdown too. Literal examples and comments
+		// must remain historical text without becoming asserted relationships.
+		visible, _ := StripNonContent(s)
+		searchable += "\n" + visible
 	}
 	for _, match := range wikilinkTarget.FindAllStringSubmatch(searchable, -1) {
 		if id := strings.TrimSpace(match[1]); id != "" {
@@ -332,7 +335,8 @@ func validateMigrationInvariant(original, candidate string) error {
 	required := append([]string(nil), old.Related...)
 	clean, _ := StripNonContent(oldBody)
 	for _, s := range ReadLegacy(old).AuthoredText() {
-		clean += "\n" + s
+		visible, _ := StripNonContent(s)
+		clean += "\n" + visible
 	}
 	for _, match := range wikilinkTarget.FindAllStringSubmatch(clean, -1) {
 		required = append(required, strings.TrimSpace(match[1]))
