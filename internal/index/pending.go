@@ -8,23 +8,85 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/bright-interaction/mesh/internal/vault"
 	"strings"
 	"time"
 )
 
-// PendingNote is an auto-extracted write-back candidate awaiting human review. It
-// mirrors the mesh_append_note fields so a promoted candidate becomes a note with no
-// remapping. It is NOT in retrieval until promoted.
+// PendingNote is an extracted draft awaiting review. Structured authoring lives in
+// one JSON payload; historical columns are retained by the legacy read adapter.
+// Pending items never enter retrieval until publication succeeds.
 type PendingNote struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	Title      string `json:"title"`
-	Do         string `json:"do"`
-	Dont       string `json:"dont"`
-	Why        string `json:"why"`
-	Confidence string `json:"confidence"`
-	Source     string `json:"source"`
-	CreatedAt  int64  `json:"created_at"`
+	ID              string            `json:"id"`
+	Type            string            `json:"type"`
+	Title           string            `json:"title"`
+	Template        string            `json:"template,omitempty"`
+	TemplateVersion int               `json:"template_version,omitempty"`
+	Summary         string            `json:"summary,omitempty"`
+	Sections        map[string]string `json:"sections,omitempty"`
+	Blocks          []vault.BlockSpec `json:"blocks,omitempty"`
+	Collections     []string          `json:"collections,omitempty"`
+	Tags            []string          `json:"tags,omitempty"`
+	Related         []string          `json:"related,omitempty"`
+	Supersedes      []string          `json:"supersedes,omitempty"`
+	Confidence      string            `json:"confidence"`
+	Source          string            `json:"source"`
+	CreatedAt       int64             `json:"created_at"`
+	// Deprecated: historical pending payloads only. Active producers never set
+	// these fields, and promotion requires an explicit reviewed replacement.
+	Do   string `json:"do,omitempty"`
+	Dont string `json:"dont,omitempty"`
+	Why  string `json:"why,omitempty"`
+}
+
+var ErrPendingQueueFull = errors.New("pending review queue is full; review existing drafts before extracting more")
+
+// AuthoringSpec is the sole promotion adapter. It deliberately refuses to guess
+// purpose-specific prose from historical shorthand.
+func (p PendingNote) AuthoringSpec() (vault.NewNoteSpec, error) {
+	if p.Template == "" || p.HasLegacy() {
+		return vault.NewNoteSpec{}, fmt.Errorf("historical draft requires a reviewed template and authored sections")
+	}
+	return vault.NewNoteSpec{
+		Type: vault.NoteType(p.Type), Title: p.Title, Template: p.Template,
+		TemplateVersion: p.TemplateVersion, Summary: p.Summary, Sections: p.Sections,
+		Blocks: p.Blocks, Collections: p.Collections, Tags: p.Tags, Related: p.Related,
+		Supersedes: p.Supersedes, Confidence: p.Confidence,
+		Source: "agent", Agent: "mesh-extract", By: "mesh-extract", Status: "active",
+	}, nil
+}
+
+// pendingPayload decouples durable structured drafts from the historical columns.
+type pendingPayload struct {
+	Template        string            `json:"template"`
+	TemplateVersion int               `json:"template_version"`
+	Summary         string            `json:"summary"`
+	Sections        map[string]string `json:"sections"`
+	Blocks          []vault.BlockSpec `json:"blocks,omitempty"`
+	Collections     []string          `json:"collections,omitempty"`
+	Tags            []string          `json:"tags,omitempty"`
+	Related         []string          `json:"related,omitempty"`
+	Supersedes      []string          `json:"supersedes,omitempty"`
+}
+
+func (p PendingNote) payload() pendingPayload {
+	return pendingPayload{p.Template, p.TemplateVersion, p.Summary, p.Sections, p.Blocks, p.Collections, p.Tags, p.Related, p.Supersedes}
+}
+func (p *PendingNote) readPayload(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	} // isolated legacy adapter: preserve original words
+	var a pendingPayload
+	if err := json.Unmarshal([]byte(raw), &a); err != nil {
+		return fmt.Errorf("decode pending authoring payload: %w", err)
+	}
+	p.Template, p.TemplateVersion, p.Summary, p.Sections = a.Template, a.TemplateVersion, a.Summary, a.Sections
+	p.Blocks, p.Collections, p.Tags, p.Related, p.Supersedes = a.Blocks, a.Collections, a.Tags, a.Related, a.Supersedes
+	return nil
 }
 
 // PendingID derives a stable id from type+title so re-extracting the same session (or
@@ -34,16 +96,11 @@ func PendingID(noteType, title string) string {
 	return "pending-" + hex.EncodeToString(sum[:8])
 }
 
-// pendingQueueCap bounds the review queue. Extraction is non-deterministic and the
-// BYOAI can reword the same learning across runs, so despite the dedup the queue could
-// grow without limit and bury the reviewer. When the cap is exceeded the OLDEST items
-// are dropped (a reviewer works newest-first; a genuinely important old learning gets
-// re-extracted the next time a session touches it).
+// pendingQueueCap bounds admission without discarding unreviewed work. Existing
+// items can still be updated, reviewed, or discarded when the queue is full.
 const pendingQueueCap = 200
 
-// AddPending stores a candidate for review. Idempotent on (type,title): a duplicate
-// extraction updates the existing row rather than piling up review items. The queue is
-// capped at pendingQueueCap; older items beyond the cap are pruned in the same tx.
+// AddPending stores a review draft. Duplicate IDs update the existing payload.
 func (s *Store) AddPending(p PendingNote) error {
 	return s.AddPendingContext(context.Background(), p)
 }
@@ -62,22 +119,39 @@ func (s *Store) AddPendingContext(ctx context.Context, p PendingNote) error {
 	if p.CreatedAt == 0 {
 		p.CreatedAt = time.Now().Unix()
 	}
-	return s.WriteContext(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO pending_notes(id,type,title,do_text,dont_text,why,confidence,source,created_at)
-			 VALUES(?,?,?,?,?,?,?,?,?)
-			 ON CONFLICT(id) DO UPDATE SET
-			   do_text=excluded.do_text, dont_text=excluded.dont_text, why=excluded.why,
-			   confidence=excluded.confidence, source=excluded.source`,
-			p.ID, p.Type, p.Title, p.Do, p.Dont, p.Why, p.Confidence, p.Source, p.CreatedAt); err != nil {
+	payload := ""
+	if p.Template != "" {
+		raw, err := json.Marshal(p.payload())
+		if err != nil {
 			return err
 		}
-		// Cap the queue: keep only the newest pendingQueueCap rows.
-		_, err := tx.ExecContext(ctx,
-			`DELETE FROM pending_notes WHERE id NOT IN (
-			   SELECT id FROM pending_notes ORDER BY created_at DESC, id DESC LIMIT ?)`,
-			pendingQueueCap)
-		return err
+		if len(raw) > 64<<10 {
+			return fmt.Errorf("pending authoring payload exceeds 64 KiB")
+		}
+		payload = string(raw)
+	}
+	return s.WriteContext(ctx, func(tx *sql.Tx) error {
+		var count, exists int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*), count(CASE WHEN id=? THEN 1 END) FROM pending_notes`, p.ID).Scan(&count, &exists); err != nil {
+			return err
+		}
+		if exists == 0 && count >= pendingQueueCap {
+			return ErrPendingQueueFull
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO pending_notes(id,type,title,do_text,dont_text,why,confidence,source,created_at,authoring_json)
+			 VALUES(?,?,?,?,?,?,?,?,?,?)
+			 ON CONFLICT(id) DO UPDATE SET
+			   type=excluded.type, title=excluded.title,
+             authoring_json=CASE WHEN excluded.authoring_json='' THEN pending_notes.authoring_json ELSE excluded.authoring_json END,
+             do_text=CASE WHEN COALESCE(excluded.do_text,'')='' THEN pending_notes.do_text ELSE excluded.do_text END,
+             dont_text=CASE WHEN COALESCE(excluded.dont_text,'')='' THEN pending_notes.dont_text ELSE excluded.dont_text END,
+             why=CASE WHEN COALESCE(excluded.why,'')='' THEN pending_notes.why ELSE excluded.why END,
+			   confidence=excluded.confidence, source=excluded.source`,
+			p.ID, p.Type, p.Title, p.Do, p.Dont, p.Why, p.Confidence, p.Source, p.CreatedAt, payload); err != nil {
+			return err
+		}
+		return nil
 	})
 }
 
@@ -93,7 +167,7 @@ func (s *Store) ListPendingContext(ctx context.Context) ([]PendingNote, error) {
 	}
 	rows, err := s.readDB.QueryContext(ctx,
 		`SELECT id,type,title,COALESCE(do_text,''),COALESCE(dont_text,''),COALESCE(why,''),
-		        COALESCE(confidence,''),COALESCE(source,''),created_at
+		        COALESCE(confidence,''),COALESCE(source,''),created_at,COALESCE(authoring_json,'')
 		   FROM pending_notes ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -102,7 +176,11 @@ func (s *Store) ListPendingContext(ctx context.Context) ([]PendingNote, error) {
 	var out []PendingNote
 	for rows.Next() {
 		var p PendingNote
-		if err := rows.Scan(&p.ID, &p.Type, &p.Title, &p.Do, &p.Dont, &p.Why, &p.Confidence, &p.Source, &p.CreatedAt); err != nil {
+		var payload string
+		if err := rows.Scan(&p.ID, &p.Type, &p.Title, &p.Do, &p.Dont, &p.Why, &p.Confidence, &p.Source, &p.CreatedAt, &payload); err != nil {
+			return nil, err
+		}
+		if err := p.readPayload(payload); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -121,11 +199,15 @@ func (s *Store) GetPendingContext(ctx context.Context, id string) (PendingNote, 
 		ctx = context.Background()
 	}
 	var p PendingNote
+	var payload string
 	err := s.readDB.QueryRowContext(ctx,
 		`SELECT id,type,title,COALESCE(do_text,''),COALESCE(dont_text,''),COALESCE(why,''),
-		        COALESCE(confidence,''),COALESCE(source,''),created_at
+		        COALESCE(confidence,''),COALESCE(source,''),created_at,COALESCE(authoring_json,'')
 		   FROM pending_notes WHERE id=?`, id).
-		Scan(&p.ID, &p.Type, &p.Title, &p.Do, &p.Dont, &p.Why, &p.Confidence, &p.Source, &p.CreatedAt)
+		Scan(&p.ID, &p.Type, &p.Title, &p.Do, &p.Dont, &p.Why, &p.Confidence, &p.Source, &p.CreatedAt, &payload)
+	if err == nil {
+		err = p.readPayload(payload)
+	}
 	return p, err
 }
 

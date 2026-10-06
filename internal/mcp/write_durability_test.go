@@ -37,7 +37,7 @@ func TestWriteSurvivesAFailedIndexRefresh(t *testing.T) {
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: "tools/call",
 		Params: mustJSON(map[string]any{"name": "mesh_append_note", "arguments": map[string]any{
 			"type": "gotcha", "title": "Durable under a broken index",
-			"do": "report success", "dont": "report -32603", "why": "a retry duplicates the note",
+			"summary": "Report durable publication accurately because retries duplicate notes.", "sections": fixtureSections("gotcha"),
 		}}),
 	})
 
@@ -79,7 +79,7 @@ func TestWriteOnAHealthyIndexReportsNoStaleness(t *testing.T) {
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: "tools/call",
 		Params: mustJSON(map[string]any{"name": "mesh_append_note", "arguments": map[string]any{
 			"type": "gotcha", "title": "Healthy index stays quiet",
-			"do": "omit the flag", "dont": "always warn", "why": "a constant warning is not a signal",
+			"summary": "Warn only when the index is stale so the receipt remains useful.", "sections": fixtureSections("gotcha"),
 		}}),
 	})
 	if rerr != nil {

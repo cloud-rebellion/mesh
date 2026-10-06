@@ -32,6 +32,7 @@ import (
 // writerCommands instead. Every command that touches the index at all must appear in
 // exactly one of the maps in this file; see TestEveryIndexTouchingCommandIsClassified.
 var readOnlyCommands = map[string]string{
+	"draftsCmd":        "bounded current-file draft browsing",
 	"doctorCmd":        "counts rows and reports drift",
 	"statusCmd":        "counts rows, loads the graph, reads vector stats",
 	"guardsListCmd":    "reads stored gotchas",

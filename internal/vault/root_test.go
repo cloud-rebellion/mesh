@@ -44,7 +44,7 @@ func TestRequireRootRefusesWhatIsNotAVault(t *testing.T) {
 // does the inventing, not only at the flag that happened to be measured.
 func TestCreateNoteWillNotInventTheVault(t *testing.T) {
 	ghost := filepath.Join(t.TempDir(), "nonexistent-typo")
-	res, err := CreateNote(ghost, NewNoteSpec{Type: TypeDecision, Title: "Typo test", Do: "a", Dont: "b", Why: "c"})
+	res, err := CreateNote(ghost, completeFixtureSpec(NewNoteSpec{Type: TypeDecision, Title: "Typo test", Do: "a", Dont: "b", Why: "c"}))
 	if err == nil {
 		t.Fatalf("CreateNote created a note at %s in a vault that does not exist", res.Path)
 	}

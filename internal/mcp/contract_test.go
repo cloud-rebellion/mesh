@@ -78,8 +78,8 @@ func TestRetrievalContractHTTPDelivery(t *testing.T) {
 			t.Errorf("resource missing write-back safety guidance %q", want)
 		}
 	}
-	if len(c.Text) > 4000 {
-		t.Fatalf("optional contract grew to %d bytes; budget 4000", len(c.Text))
+	if len(c.Text) > 5200 {
+		t.Fatalf("optional contract grew to %d bytes; budget 5200", len(c.Text))
 	}
 	t.Logf("initialize=%d bytes optional contract=%d bytes", len(initialized.Instructions), len(c.Text))
 }

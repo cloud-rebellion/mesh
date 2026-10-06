@@ -87,7 +87,17 @@ type Card struct {
 	SupersededBy string `json:",omitempty"`
 	// MissingGuidance identifies unfilled required fields, not a factual quality
 	// score. Tier0 remains a note-type classification, never a verification badge.
-	MissingGuidance []string `json:",omitempty"`
+	MissingGuidance   []string               `json:",omitempty"`
+	State             string                 `json:",omitempty"`
+	Summary           string                 `json:",omitempty"`
+	Template          string                 `json:",omitempty"`
+	TemplateVersion   int                    `json:",omitempty"`
+	Updated           string                 `json:",omitempty"`
+	VerifiedAt        string                 `json:",omitempty"`
+	Source            string                 `json:",omitempty"`
+	SourceURL         string                 `json:",omitempty"`
+	Sections          []index.SectionAddress `json:",omitempty"`
+	SectionsTruncated bool                   `json:",omitempty"`
 }
 
 // GuidanceWarning is the human/prompt form of the compact structured card flag.
@@ -95,7 +105,7 @@ func (c Card) GuidanceWarning() string {
 	if len(c.MissingGuidance) == 0 {
 		return ""
 	}
-	return "Incomplete guidance: missing " + strings.Join(c.MissingGuidance, ", ") + "; verify before relying on this note."
+	return "Incomplete authored content: " + strings.Join(c.MissingGuidance, ", ") + "; review the source before relying on this note."
 }
 
 // Options tunes a retrieval. Zero values get sensible defaults.
@@ -1534,13 +1544,13 @@ func (r *Retriever) currentCards(ctx context.Context, ids []string, opt Options)
 // or unreadable superseder metadata must leave the card completely undemoted.
 func currentCardFromMetadata(m index.NoteMetadata, opt Options) (Card, bool) {
 	c, ok := cardFromMetadata(m)
-	if !ok || !scopeAllowed(c.Scope, opt.AllowedScopes) || !pathAllowed(c.Path, opt.AllowPath) {
+	if !ok || strings.EqualFold(strings.TrimSpace(m.State), "draft") || !scopeAllowed(c.Scope, opt.AllowedScopes) || !pathAllowed(c.Path, opt.AllowPath) {
 		return Card{}, false
 	}
 	// NoteMetadataFor and NoteDocuments read this relation plus the superseding note's
 	// CURRENT path/scope in the same statement. A stale in-memory graph can therefore
 	// neither leak an old id nor acknowledge a newly fenced/deleted replacement.
-	if m.SupersededBy != "" && m.SupersederPath != "" &&
+	if m.SupersededBy != "" && m.SupersederPath != "" && !strings.EqualFold(strings.TrimSpace(m.SupersederState), "draft") &&
 		scopeAllowed(m.SupersederScope, opt.AllowedScopes) &&
 		pathAllowed(m.SupersederPath, opt.AllowPath) {
 		c.SupersededBy = m.SupersededBy
@@ -1554,14 +1564,24 @@ func cardFromMetadata(m index.NoteMetadata) (Card, bool) {
 		return Card{NodeID: m.NodeID}, false
 	}
 	return Card{
-		NodeID:          m.NodeID,
-		NoteID:          m.NoteID,
-		Title:           m.Title,
-		Path:            m.Path,
-		Type:            m.Type,
-		Scope:           m.Scope,
-		Tier0:           tier0Types[m.Type],
-		MissingGuidance: m.MissingGuidance,
+		NodeID:            m.NodeID,
+		NoteID:            m.NoteID,
+		Title:             m.Title,
+		Path:              m.Path,
+		Type:              m.Type,
+		Scope:             m.Scope,
+		Tier0:             tier0Types[m.Type],
+		MissingGuidance:   m.MissingGuidance,
+		State:             m.State,
+		Summary:           m.Summary,
+		Template:          m.Template,
+		TemplateVersion:   m.TemplateVersion,
+		Updated:           m.Updated,
+		VerifiedAt:        m.VerifiedAt,
+		Source:            m.Source,
+		SourceURL:         m.SourceURL,
+		Sections:          m.Sections,
+		SectionsTruncated: m.SectionsTruncated,
 	}, true
 }
 
@@ -1575,6 +1595,12 @@ func (r *Retriever) card(id string) (Card, bool) {
 	if !ok || n.Kind != "note" || strings.TrimSpace(n.Label) == "" ||
 		strings.TrimSpace(n.NotePath) == "" || strings.TrimSpace(n.NoteID) == "" {
 		return c, false
+	}
+	if state, ok := n.Attrs["status"].(string); ok {
+		c.State = state
+		if strings.EqualFold(strings.TrimSpace(state), "draft") {
+			return c, false
+		}
 	}
 	c.Title = n.Label
 	c.Path = n.NotePath

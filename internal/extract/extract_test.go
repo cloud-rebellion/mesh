@@ -22,9 +22,9 @@ func TestExtractConsistentUnionsAndDedups(t *testing.T) {
 	var n int32
 	stub := llm.Func(func(ctx context.Context, system, user string) (string, error) {
 		if atomic.AddInt32(&n, 1) == 1 {
-			return `[{"type":"gotcha","title":"Alpha rule about pgx","do":"x","dont":"y","why":"z"}]`, nil
+			return `[{"title":"Alpha rule about pgx","template":"troubleshooting","template_version":1}]`, nil
 		}
-		return `[{"type":"gotcha","title":"Alpha rule about pgx nulls","do":"x","dont":"y","why":"z"},{"type":"decision","title":"Beta decision on bun","do":"a","dont":"b","why":"c"}]`, nil
+		return `[{"title":"Alpha rule about pgx nulls","template":"troubleshooting","template_version":1},{"title":"Beta decision on bun","template":"decision","template_version":1}]`, nil
 	})
 	got, err := ExtractConsistent(context.Background(), stub, "digest", 3)
 	if err != nil {
@@ -54,7 +54,7 @@ func TestExtractConsistentUnionsAndDedups(t *testing.T) {
 // errors (never silently drops knowledge), and errors only when EVERY lens fails. Each
 // lens is identified by a keyword in its system prompt, so a stub can vote per lens.
 func TestJudgePanel(t *testing.T) {
-	c := Candidate{Type: "gotcha", Title: "x", Do: "y"}
+	c := Candidate{Template: "troubleshooting", TemplateVersion: 1, Title: "x", Summary: "A synthetic judge fixture."}
 	ctx := context.Background()
 
 	keepAll := llm.Func(func(ctx context.Context, system, user string) (string, error) {
@@ -247,13 +247,14 @@ func TestParseCandidates(t *testing.T) {
 		in   string
 		want int
 	}{
-		{"clean", `[{"type":"gotcha","title":"T","do":"d","dont":"x","why":"w","confidence":"high"}]`, 1},
-		{"fenced", "```json\n[{\"type\":\"decision\",\"title\":\"T\"}]\n```", 1},
-		{"prose-wrapped", `Here you go: [{"type":"post-mortem","title":"T"}] hope that helps`, 1},
+		{"clean", `[{"title":"T","confidence":"high","template":"troubleshooting","template_version":1}]`, 1},
+		{"fenced", "```json\n[{\"template\":\"decision\",\"title\":\"T\"}]\n```", 1},
+		{"prose-wrapped", `Here you go: [{"template":"post-mortem","title":"T"}] hope that helps`, 1},
 		{"empty-array", `[]`, 0},
 		{"prose-empty", `No durable, reusable knowledge in this session.`, 0},
-		{"drops-bad-type", `[{"type":"note","title":"T"},{"type":"gotcha","title":"Keep"}]`, 1},
-		{"drops-no-title", `[{"type":"gotcha","title":""}]`, 0},
+		{"drops-bad-type", `[{"title":"T","template":"unknown-template","template_version":1},{"title":"Keep","template":"troubleshooting","template_version":1}]`, 1},
+		{"rejects-retired-fields", `[{"template":"finding","title":"T","do":"invented action"}]`, 0},
+		{"drops-no-title", `[{"title":"","template":"troubleshooting","template_version":1}]`, 0},
 	}
 	for _, c := range cases {
 		got, err := parseCandidates(c.in)
@@ -306,7 +307,7 @@ func TestExtractAndJudgeWithStub(t *testing.T) {
 		if strings.Contains(system, "reviewing one candidate") {
 			return `{"keep": true, "reason": "non-obvious + reusable"}`, nil
 		}
-		return `[{"type":"gotcha","title":"Bun not npm after migration","do":"use bun","dont":"npm silently breaks","why":"lockfile","confidence":"high"}]`, nil
+		return `[{"title":"Bun not npm after migration","confidence":"high","template":"troubleshooting","template_version":1}]`, nil
 	})
 	cands, err := Extract(context.Background(), stub, "digest")
 	if err != nil || len(cands) != 1 {
@@ -315,5 +316,27 @@ func TestExtractAndJudgeWithStub(t *testing.T) {
 	keep, reason, err := Judge(context.Background(), stub, cands[0])
 	if err != nil || !keep || reason == "" {
 		t.Fatalf("judge = %v %q %v", keep, reason, err)
+	}
+}
+
+func TestExtractionPromptUsesCanonicalRegistryAndPreservesUncertainty(t *testing.T) {
+	prompt := extractionSystem()
+	for _, want := range []string{"template_version", "sections", "finding", "troubleshooting", "Do not invent missing", "remains an incomplete review draft"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("missing prompt contract %q", want)
+		}
+	}
+	if strings.Contains(prompt, "do/dont/why") || strings.Contains(prompt, `"dont"`) {
+		t.Fatal("retired authoring format in active prompt")
+	}
+}
+
+func TestCandidateDraftKeepsMissingFactsAndRejectsInvalidSchema(t *testing.T) {
+	got, err := parseCandidates(`[{"template":"finding","template_version":1,"title":"Scoped observation","summary":"The bounded lookup returned a card.","sections":{"findings":"Only the bounded path was observed."}},{"template":"finding","template_version":99,"title":"Unknown version"},{"template":"finding","title":"Unknown section","sections":{"invented":"x"}}]`)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("candidates=%+v err=%v", got, err)
+	}
+	if got[0].Sections["evidence"] != "" {
+		t.Fatal("parser fabricated evidence")
 	}
 }

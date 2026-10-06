@@ -53,7 +53,7 @@ func TestRelatedSectionWithNoLinksStaysAPlaceholder(t *testing.T) {
 // The backfill has to reach the notes that predate a heading, and it has to leave
 // authored prose alone. Both in one fixture, because the danger is a pass that gets one
 // right by getting the other wrong.
-func TestBackfillAddsMissingRelatedAndKeepsAuthoredProse(t *testing.T) {
+func TestRetiredBackfillKeepsAuthoredProseAndRelatedMetadata(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "g.md")
 	// A gotcha written before Related existed: Symptom is authored, Cause is still the
@@ -87,55 +87,17 @@ The operator's own words about how this shows up.
 		t.Fatal(err)
 	}
 	res, err := BackfillBodyFile(path, false)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || res.Changed {
+		t.Fatalf("retired operation accepted: %+v %v", res, err)
 	}
-	if !res.Changed {
-		t.Fatal("the backfill reported no change on a note missing Related and holding two placeholders")
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := string(got)
-	if !strings.Contains(body, "## Related\n- [[alpha]]") {
-		t.Errorf("Related was not added with its rendered link:\n%s", body)
-	}
-	if !strings.Contains(body, "The operator's own words about how this shows up.") {
-		t.Errorf("authored prose was destroyed:\n%s", body)
-	}
-	if !strings.Contains(body, "because the other thing eats the index") {
-		t.Errorf("the Cause placeholder was not filled from why:\n%s", body)
-	}
-	// The provenance trailer stays last: a section bolted past the signature reads as an
-	// afterthought.
-	if !strings.HasSuffix(strings.TrimSpace(body), "<!-- authored by claude-code -->") {
-		t.Errorf("the provenance comment is no longer last:\n%s", body)
-	}
-
-	// Idempotent. This pass rewrites every note in a 1200-note vault in place with no
-	// backup, so a second run doing anything at all is a data-integrity bug, not a
-	// cosmetic one.
-	second, err := BackfillBodyFile(path, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.Changed {
-		t.Fatalf("second run changed the note again: %v", second.Actions)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != body {
-		t.Fatal("a second backfill produced different bytes; the pass is not idempotent")
+	got, readErr := os.ReadFile(path)
+	if readErr != nil || string(got) != original {
+		t.Fatalf("authored prose or links changed: %q %v", got, readErr)
 	}
 }
 
-// A note carrying the placeholder text this template USED to emit must still be
-// upgradable, or the backfill silently skips the oldest notes: the ones with the most
-// accumulated links and the most to gain.
-func TestBackfillUpgradesARetiredPlaceholder(t *testing.T) {
+// Historical placeholders and references require deliberate reviewed conversion.
+func TestRetiredBackfillRequiresReviewedPlaceholderConversion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "d.md")
 	original := `---
@@ -167,17 +129,12 @@ do not do the other
 	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BackfillBodyFile(path, false); err != nil {
-		t.Fatal(err)
+	res, err := BackfillBodyFile(path, false)
+	if err == nil || res.Changed {
+		t.Fatalf("retired operation accepted: %+v %v", res, err)
 	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(got), "- [[alpha]]") {
-		t.Fatalf("the retired Related placeholder was not upgraded to real links:\n%s", got)
-	}
-	if strings.Contains(string(got), "render in the graph") {
-		t.Fatalf("the retired placeholder text survived:\n%s", got)
+	got, readErr := os.ReadFile(path)
+	if readErr != nil || string(got) != original {
+		t.Fatalf("historical placeholder or references changed: %q %v", got, readErr)
 	}
 }

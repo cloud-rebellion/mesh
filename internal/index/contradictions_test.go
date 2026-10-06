@@ -21,7 +21,7 @@ func legacyContradictionFindings(notes []guidanceRow) []HealthFinding {
 			if i == j || !shareTag(notes[i].tags, notes[j].tags) {
 				continue
 			}
-			if jaccard(tokenSet(notes[i].do), tokenSet(notes[j].dont)) < 0.6 {
+			if jaccard(tokenSet(notes[i].recommended), tokenSet(notes[j].forbidden)) < 0.6 {
 				continue
 			}
 			key := pairKey(notes[i].id, notes[j].id)
@@ -41,14 +41,14 @@ func legacyContradictionFindings(notes []guidanceRow) []HealthFinding {
 func TestContradictionFindingsMatchesLegacy(t *testing.T) {
 	fixtures := [][]guidanceRow{
 		nil,
-		{{id: "a", do: "alpha beta gamma", dont: "alpha beta gamma", tags: []string{"x"}}},
+		{{id: "a", recommended: "alpha beta gamma", forbidden: "alpha beta gamma", tags: []string{"x"}}},
 		{
-			{id: "a", path: "a.md", do: "alpha beta gamma", dont: "other guidance", tags: []string{"Mesh", "mesh", ""}},
-			{id: "b", path: "b.md", do: "other guidance", dont: "alpha beta gamma delta epsilon", tags: []string{"MESH", "", "MESH"}}, // exactly .6
-			{id: "c", dont: "alpha beta gamma delta epsilon zeta", tags: []string{"mesh"}},                                            // below .6
-			{id: "d", dont: "alpha beta gamma"}, // no shared tag
-			{id: "e", do: "the and for", dont: "alpha beta gamma", tags: []string{"mesh"}},
-			{id: "f", do: "'ALPHA' beta, gamma!", dont: "other guidance", tags: []string{""}},
+			{id: "a", path: "a.md", recommended: "alpha beta gamma", forbidden: "other guidance", tags: []string{"Mesh", "mesh", ""}},
+			{id: "b", path: "b.md", recommended: "other guidance", forbidden: "alpha beta gamma delta epsilon", tags: []string{"MESH", "", "MESH"}}, // exactly .6
+			{id: "c", forbidden: "alpha beta gamma delta epsilon zeta", tags: []string{"mesh"}},                                                     // below .6
+			{id: "d", forbidden: "alpha beta gamma"}, // no shared tag
+			{id: "e", recommended: "the and for", forbidden: "alpha beta gamma", tags: []string{"mesh"}},
+			{id: "f", recommended: "'ALPHA' beta, gamma!", forbidden: "other guidance", tags: []string{""}},
 		},
 	}
 	rng := rand.New(rand.NewSource(19))
@@ -59,7 +59,7 @@ func TestContradictionFindingsMatchesLegacy(t *testing.T) {
 		for i := range notes {
 			n := &notes[i]
 			n.id, n.path = fmt.Sprintf("note-%d", i), fmt.Sprintf("%d.md", i)
-			n.do, n.dont = phrases[rng.Intn(len(phrases))], phrases[rng.Intn(len(phrases))]
+			n.recommended, n.forbidden = phrases[rng.Intn(len(phrases))], phrases[rng.Intn(len(phrases))]
 			for j := rng.Intn(5); j > 0; j-- {
 				n.tags = append(n.tags, tags[rng.Intn(len(tags))])
 			}
@@ -77,7 +77,7 @@ func BenchmarkContradictionFindings(b *testing.B) {
 	for _, n := range []int{100, 1000, 3000} {
 		notes := make([]guidanceRow, n)
 		for i := range notes {
-			notes[i] = guidanceRow{id: fmt.Sprint(i), do: strings.Repeat("preserve committed snapshots and validate note versions before acknowledgement ", 8), dont: strings.Repeat("overwrite user files or silently skip verification and report successful completion ", 8), tags: []string{"mesh", fmt.Sprintf("group-%d", i%16)}}
+			notes[i] = guidanceRow{id: fmt.Sprint(i), recommended: strings.Repeat("preserve committed snapshots and validate note versions before acknowledgement ", 8), forbidden: strings.Repeat("overwrite user files or silently skip verification and report successful completion ", 8), tags: []string{"mesh", fmt.Sprintf("group-%d", i%16)}}
 		}
 		for _, impl := range []struct {
 			name string

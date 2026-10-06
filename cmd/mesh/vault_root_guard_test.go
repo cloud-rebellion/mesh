@@ -94,7 +94,7 @@ func TestVaultTakingWriteCommandsRefuseAPathThatIsNotThere(t *testing.T) {
 		args func(ghost string) []string
 	}{
 		{"new", func(g string) []string {
-			return []string{"new", "decision", "Typo test", "--vault", g, "--do", "a", "--dont", "b", "--why", "c"}
+			return []string{"new", "decision", "Typo test", "--vault", g, "--status", "draft", "--summary", "An authored draft summary", "--section", "question=The fixture checks a vault root."}
 		}},
 		{"watch", func(g string) []string { return []string{"watch", g} }},
 		{"mcp", func(g string) []string { return []string{"mcp", "--vault", g} }},
@@ -144,12 +144,12 @@ func TestVaultTakingCommandsStillAcceptAVaultWithNoMeshDir(t *testing.T) {
 	cmd := rootCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"new", "gotcha", "Real note", "--vault", root, "--do", "a", "--dont", "b", "--why", "c"})
+	cmd.SetArgs([]string{"new", "finding", "Real note", "--vault", root, "--status", "draft", "--summary", "An authored draft summary", "--section", "question=The fixture checks a vault root."})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("`mesh new` refused an existing vault directory that simply has no .mesh yet: %v (output %q). "+
 			"The guard is meant to refuse a path that is NOT THERE, not a vault that has not been indexed.", err, buf.String())
 	}
-	written := filepath.Join(root, "gotchas", "real-note.md")
+	written := filepath.Join(root, "inbox", "real-note.md")
 	if _, err := os.Stat(written); err != nil {
 		t.Fatalf("`mesh new` reported success but %s is not there: %v", written, err)
 	}

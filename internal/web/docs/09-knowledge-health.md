@@ -17,10 +17,11 @@ Dashboard.
   offset for an exact instant. Health checks and optional freshness ranking share
   this rule. Empty, invalid or event-based text is not a scheduled deadline;
   absence of an overdue finding is not evidence that the guidance is current.
-- **Contradictions.** Two tier-0 notes (decisions, gotchas, post-mortems) that share a
-  tag where one note's "do" strongly overlaps another's "dont", i.e. one recommends
-  what the other forbids. A dependency-free heuristic flags the pair; the optional
-  sync-curator can confirm with an LLM.
+- **Contradictions.** Explicit recommendations and prohibitions in decisions,
+  remedies, methods and procedures are compared when notes share a tag. A
+  conservative heuristic flags possible disagreement for review; descriptions of
+  impacts, causes and examples do not become recommendations. Historical shorthand
+  is read through the legacy adapter. A flag is not proof of a factual conflict.
 
 Findings are written to the index and surfaced as counts on the Dashboard and in full
 by the tool, grouped by issue. Fixing or updating the flagged note clears it on the

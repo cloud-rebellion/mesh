@@ -98,7 +98,7 @@ func noteIDFromHead(key string, head []byte) (string, bool) {
 // createNoteDirs is the complete, fixed set of destinations in which CreateNote can
 // publish. The pre-publication ClaimedIDs scan already catches notes in every custom
 // vault folder; the post-publication check only has to find another CreateNote that raced
-// that scan, and such a racer can appear only in one of these seven directories.
+// that scan, and such a racer can appear only in a canonical type directory or inbox.
 var createNoteDirs = [...]string{
 	"decisions",
 	"gotchas",
@@ -107,6 +107,8 @@ var createNoteDirs = [...]string{
 	"concepts",
 	"maps",
 	"notes",
+	"statuses",
+	"inbox",
 }
 
 // otherFileNamedForID retains the non-context compatibility surface used by existing
@@ -118,7 +120,7 @@ func otherFileNamedForID(root, id, ownPath string) string {
 
 // otherFileNamedForIDContext returns the vault-relative path of a regular <id>.md
 // published by a concurrent CreateNote in another type directory, or "" when ownPath is
-// the only one. It deliberately performs at most seven Lstat calls instead of a second
+// the only one. It checks the fixed destination set instead of a second
 // full-vault traversal after O_EXCL. Each stat is isolated so a cancelled caller does not
 // wait on a stalled FUSE/network filesystem; the goroutine is read-only and publishes
 // only to its private buffered channel, so it can never mutate the vault after return.

@@ -124,8 +124,8 @@ func TestInitializeAndToolsList(t *testing.T) {
 	}
 	list := call(t, s, "tools/list", map[string]any{})
 	tools, _ := list["tools"].([]map[string]any)
-	if len(tools) != 18 {
-		t.Errorf("expected 18 tools, got %d", len(tools))
+	if len(tools) != len(ToolNames()) {
+		t.Errorf("listed %d tools, registered %d", len(tools), len(ToolNames()))
 	}
 }
 
@@ -255,7 +255,7 @@ func TestToolWriteBackReindexes(t *testing.T) {
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: "tools/call",
 		Params: mustJSON(map[string]any{"name": "mesh_append_note", "arguments": map[string]any{
 			"type": "gotcha", "title": "Vec extensions unavailable",
-			"do": "use flat cosine", "dont": "depend on vec0", "why": "modernc has no C extensions",
+			"summary": "Use flat cosine because modernc has no C extensions; vec0 is unavailable.", "sections": fixtureSections("gotcha"),
 		}}),
 	})
 	if rerr != nil {
@@ -296,7 +296,7 @@ func TestToolWriteRecordsProvenance(t *testing.T) {
 		JSONRPC: "2.0", ID: json.RawMessage(`2`), Method: "tools/call",
 		Params: mustJSON(map[string]any{"name": "mesh_append_note", "arguments": map[string]any{
 			"type": "decision", "title": "Prov check note",
-			"do": "stamp provenance", "dont": "drop authorship", "why": "audit + lifecycle need it",
+			"summary": "Stamp provenance so audit and lifecycle retain authorship.", "sections": fixtureSections("decision"),
 			"confidence": "high", "review_by": "2027-01-01",
 		}}),
 	})
@@ -341,8 +341,8 @@ func TestHandleHTTPMatchesDispatch(t *testing.T) {
 	if out.Error != nil {
 		t.Fatalf("rpc error: %v", *out.Error)
 	}
-	if len(out.Result.Tools) != 18 {
-		t.Fatalf("tools over HTTP = %d, want 18", len(out.Result.Tools))
+	if len(out.Result.Tools) != len(ToolNames()) {
+		t.Fatalf("tools over HTTP = %d, want %d", len(out.Result.Tools), len(ToolNames()))
 	}
 
 	// A tools/call over HTTP returns the same shape as stdio.

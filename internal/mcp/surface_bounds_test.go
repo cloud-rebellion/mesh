@@ -188,7 +188,7 @@ func TestCodeSearchClampsLimit(t *testing.T) {
 func TestAppendNoteErrorDoesNotLeakServerPath(t *testing.T) {
 	s := newTestServer(t)
 	raw, _ := json.Marshal(map[string]any{
-		"type": "gotcha", "title": strings.Repeat("b", 400), "do": "x", "dont": "y", "why": "z"})
+		"type": "gotcha", "title": strings.Repeat("b", 400), "summary": "Test the filename size bound before publication.", "sections": fixtureSections("gotcha")})
 	_, rerr := s.toolWrite(WithLocalOperator(context.Background()), raw, "gotcha")
 	if rerr == nil {
 		t.Fatal("a 400-character title must be refused")

@@ -15,8 +15,7 @@ import (
 const maxChunkChars = 6000
 
 // ChunkText splits a note into retrieval units. Chunk 0 is the header (title +
-// the flywheel fields do/dont/why + tags, the institutional memory that lives
-// in frontmatter, not the body); the rest are one chunk per heading section,
+// authored summary + retained legacy guidance + tags); the rest are one chunk per heading section,
 // each carrying the title as context so an isolated chunk is still
 // self-describing. The default embed path joins these into one whole-note
 // vector; `mesh embed --per-section` stores them separately and scores a note
@@ -31,7 +30,11 @@ func ChunkText(pn *ParsedNote) []string {
 	// Placeholders must not reach the embedding header: it is prepended to EVERY chunk of
 	// the note, so "TODO" three times over dragged unfilled notes together in vector space
 	// and diluted their real content.
-	for _, v := range []string{pn.FM.Do, pn.FM.Dont, pn.FM.Why} {
+	summary := pn.FM.Summary
+	if authored, err := vault.ReadAuthoring(pn.FM, pn.Body); err == nil {
+		summary = authored.Summary
+	}
+	for _, v := range append([]string{summary}, vault.LegacySearchText(pn.FM)...) {
 		clean, _ := vault.StripComments(v)
 		if !vault.Unfilled(clean) {
 			header += "\n" + clean

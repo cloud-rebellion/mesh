@@ -48,7 +48,7 @@ func spacedMemberServer(t *testing.T) (*Server, string) {
 			return 0, "", false
 		},
 		func(id int64) map[string]bool { return nil },
-		func(id int64) func(string) bool { return nil },
+		nil, // no folder permission provider configured in this fixture
 		func(id int64) (string, int64, bool) { return "admin", 1000, true },
 	)
 	return s, dir
@@ -107,8 +107,7 @@ func TestPromoteDoesNotLeakTheServerVaultPath(t *testing.T) {
 			// The extractor fills the queue and the owner resolves it; the viewer only
 			// reads. Seeding through s.store would need a writable viewer, which is the
 			// shape the single-writer split removed.
-			seedPending(t, dir, index.PendingNote{
-				Type: "gotcha", Title: "Keep me", Do: "do x", Dont: "dont y", Why: "because"})
+			seedPending(t, dir, completePending("Keep me"))
 			code, body := promoteAsAdmin(t, s, index.PendingID("gotcha", "Keep me"))
 			if code != tc.wantStatus {
 				t.Fatalf("promote = %d, want %d: %s", code, tc.wantStatus, body)

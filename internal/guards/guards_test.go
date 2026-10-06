@@ -10,6 +10,7 @@ import (
 
 	"github.com/bright-interaction/mesh/internal/index"
 	"github.com/bright-interaction/mesh/internal/llm"
+	"github.com/bright-interaction/mesh/internal/vault"
 )
 
 func TestParseGuard(t *testing.T) {
@@ -53,8 +54,32 @@ func TestSuggestWithStub(t *testing.T) {
 	stub := llm.Func(func(_ context.Context, _, _ string) (string, error) {
 		return `{"applies":true,"pattern":"chi\\.RealIP","globs":"*.go","message":"use ClientIP middleware with trusted proxies","severity":"block","reason":"textual"}`, nil
 	})
-	g, err := Suggest(context.Background(), stub, index.GotchaRow{ID: "g1", Title: "chi RealIP takeover", Dont: "use chi RealIP"})
+	g, err := Suggest(context.Background(), stub, index.GotchaRow{ID: "g1", Title: "chi RealIP takeover", Legacy: &vault.LegacyContent{Dont: "use chi RealIP"}})
 	if err != nil || !g.Applies || g.GotchaID != "g1" || g.Pattern == "" {
 		t.Fatalf("Suggest = %+v, %v", g, err)
+	}
+}
+
+func TestSuggestUsesAuthoredTemplateContentsAndRejectsIncompleteEvidence(t *testing.T) {
+	called := 0
+	stub := llm.Func(func(_ context.Context, system, request string) (string, error) {
+		called++
+		if !strings.Contains(system, "Incident impact") || !strings.Contains(request, "Cause or hypothesis") || !strings.Contains(request, "verification: source review passed") || strings.Contains(request, "dont:") {
+			t.Fatalf("template evidence was reinterpreted as a legacy prohibition: %s\n%s", system, request)
+		}
+		return `{"applies":false,"reason":"runtime-only evidence"}`, nil
+	})
+	row := index.GotchaRow{ID: "modern", Title: "A modern gotcha", Template: "troubleshooting", TemplateVersion: 1, Summary: "A bounded diagnosis.", Content: "## Cause or hypothesis\nImpact followed a stale cache.\n## Remedy\nUse a supported cache refresh.\nverification: source review passed"}
+	if _, err := Suggest(context.Background(), stub, row); err != nil || called != 1 {
+		t.Fatalf("suggestion failed: %v calls=%d", err, called)
+	}
+	row.MissingSections = []string{"verification"}
+	if result, err := Suggest(context.Background(), stub, row); err != nil || result.Applies || called != 1 {
+		t.Fatalf("incomplete evidence reached generator: %+v %v calls=%d", result, err, called)
+	}
+	row.MissingSections = nil
+	row.ContentTruncated = true
+	if result, err := Suggest(context.Background(), stub, row); err != nil || result.Applies || called != 1 {
+		t.Fatalf("truncated evidence reached generator: %+v %v calls=%d", result, err, called)
 	}
 }

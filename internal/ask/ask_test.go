@@ -38,14 +38,14 @@ const bodyOnlyFact = "the rotation owner is the payments on-call"
 func sentinelVault(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	note := "---\nid: mollie-gotcha\ntype: gotcha\n---\n" +
-		"# Mollie webhooks need re-fetch\n" +
+	note := "---\nid: mollie-gotcha\ntype: gotcha\ntemplate: troubleshooting\ntemplate_version: 1\n---\n" +
+		"# Mollie webhooks need re-fetch\n\n## Symptoms and conditions\n" +
 		"Mollie does not HMAC webhook bodies; re-fetch the payment by id to authenticate it.\n\n" +
-		"## Rollout\nThe handler shipped behind a flag in week 12 and the flag came out in week 15. " +
+		"### Rollout\nThe handler shipped behind a flag in week 12 and the flag came out in week 15. " +
 		"Staging ran the same build for two weeks with no drift, so the cutover was a config change only.\n\n" +
-		"## Operations\nThe reconciliation job runs nightly and writes its report to the ops bucket. " +
+		"### Operations\nThe reconciliation job runs nightly and writes its report to the ops bucket. " +
 		"Retries are capped at five attempts, after which the payment lands in the manual queue.\n\n" +
-		"## Key custody\nFor the shared signing key, " + bodyOnlyFact + " and nobody else.\n"
+		"### Key custody\nFor the shared signing key, " + bodyOnlyFact + " and nobody else.\n"
 	if err := os.WriteFile(filepath.Join(dir, "mollie.md"), []byte(note), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestAnswerGroundsAndCites(t *testing.T) {
 	if !strings.Contains(res.Answer, "Re-fetch") {
 		t.Fatalf("answer = %q", res.Answer)
 	}
-	if !strings.Contains(gotContext, "Incomplete guidance: missing do, dont, why; verify before relying on this note.") {
+	if !strings.Contains(gotContext, "Incomplete authored content: summary, diagnosis, cause, remedy, verification; review the source before relying on this note.") {
 		t.Fatalf("answer model lost the incomplete-guidance warning: %s", gotContext)
 	}
 	if len(res.Citations) == 0 || res.Citations[0].Kind != "note" {

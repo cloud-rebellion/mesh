@@ -154,7 +154,11 @@ func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {
 		meta = map[string]any{
 			"title": fm.Title, "type": fm.Type, "when": fm.When, "severity": fm.Severity,
 			"tags": fm.Tags, "scope": fm.Scope, "confidence": fm.Confidence, "source": fm.Source,
-			"related": fm.Related, "do": fm.Do, "dont": fm.Dont, "why": fm.Why,
+			"related": fm.Related, "template": fm.Template, "template_version": fm.TemplateVersion,
+			"summary": fm.Summary, "collections": fm.Collections, "status": fm.Status, "supersedes": fm.Supersedes,
+		}
+		if authored, aerr := vault.ReadAuthoring(fm, body); aerr == nil {
+			meta["summary"] = authored.Summary
 		}
 	}
 	if r.Context().Err() != nil {

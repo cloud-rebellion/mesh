@@ -33,7 +33,7 @@ func guardsListCmd() *cobra.Command {
 	var all bool
 	c := &cobra.Command{
 		Use:   "list [vault]",
-		Short: "List gotchas that have an anti-pattern (guard candidates)",
+		Short: "List authored troubleshooting evidence for reviewed guard candidates",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// READ-ONLY: these surface stored gotchas, nothing more.
@@ -47,9 +47,9 @@ func guardsListCmd() *cobra.Command {
 				return err
 			}
 			for _, g := range gs {
-				fmt.Printf("- [%s] %s\n    dont: %s\n", orDash(g.Confidence), g.Title, g.Dont)
+				fmt.Printf("- [%s] %s\n    %s\n", orDash(g.Confidence), g.Title, g.Content)
 			}
-			fmt.Printf("(%d gotchas with an anti-pattern%s)\n", len(gs), ifStr(!all, ", high-confidence only", ""))
+			fmt.Printf("(%d authored troubleshooting candidates%s)\n", len(gs), ifStr(!all, ", high-confidence only", ""))
 			return nil
 		},
 	}
@@ -82,7 +82,7 @@ func guardsSuggestCmd() *cobra.Command {
 				return err
 			}
 			if len(gs) == 0 {
-				fmt.Println("no gotchas with an anti-pattern to propose guards for.")
+				fmt.Println("no authored troubleshooting candidates to propose guards for.")
 				return nil
 			}
 			if concurrency < 1 {

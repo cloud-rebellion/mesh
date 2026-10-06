@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -287,7 +288,7 @@ func TestKeepShapeVersionAdoptsLegacyStampWithoutLosingRows(t *testing.T) {
 		wantMetrics int64  // surviving counter value
 	}{
 		{name: "unchanged shape keeps the rows", storedKeep: "", wantMetrics: 7},
-		{name: "legacy unstamped shape adopts v1 and keeps the rows", storedKeep: "0", wantMetrics: 7},
+		{name: "legacy unstamped shape adopts the current stamp and keeps the rows", storedKeep: "0", wantMetrics: 7},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -330,8 +331,8 @@ func TestKeepShapeVersionAdoptsLegacyStampWithoutLosingRows(t *testing.T) {
 			if err := s2.readDB.QueryRow(`SELECT value FROM meta WHERE key='keep_shape_version'`).Scan(&stored); err != nil {
 				t.Fatal(err)
 			}
-			if stored != "1" {
-				t.Errorf("keep_shape_version left at %q, want %q (a rebuild must converge)", stored, "1")
+			if want := strconv.Itoa(keepShapeVersion); stored != want {
+				t.Errorf("keep_shape_version left at %q, want %q (a rebuild must converge)", stored, want)
 			}
 		})
 	}

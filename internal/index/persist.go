@@ -18,8 +18,8 @@ import (
 )
 
 // searchText is the body Mesh indexes into FTS5: the prose with comment noise
-// stripped, plus the flywheel fields (do/dont/why) and tags, which carry the
-// institutional memory but live in frontmatter, not the body.
+// stripped, plus the authored summary, retained legacy guidance and tags. New template
+// sections and reusable blocks already live in the body.
 //
 // It strips through the same scanner as the parser. A `(?s)<!--.*?-->` regex looks
 // equivalent and is not: it cannot match a comment that is never closed, so text the
@@ -29,10 +29,13 @@ import (
 func searchText(pn *ParsedNote) string {
 	body, _ := vault.StripComments(pn.Body)
 	parts := []string{body}
+	if clean, _ := vault.StripComments(pn.FM.Summary); !vault.Unfilled(clean) {
+		parts = append(parts, clean)
+	}
 	// vault.Unfilled, not v != "": a scaffolded note carries the literal "TODO" here, and
 	// indexing it made 77 notes in one vault match a search for "TODO" with their own
 	// placeholder as the excerpt. An unfilled field must contribute nothing.
-	for _, v := range []string{pn.FM.Do, pn.FM.Dont, pn.FM.Why} {
+	for _, v := range vault.ReadLegacy(pn.FM).AuthoredText() {
 		clean, _ := vault.StripComments(v)
 		if !vault.Unfilled(clean) {
 			parts = append(parts, clean)
@@ -377,12 +380,10 @@ func RetrievalHash(pn *ParsedNote) string { return retrievalHash(pn) }
 
 // retrievalHash is SHA256 over the node identity (effectiveID) plus the body and every
 // field that affects retrieval: the retrieval-critical frontmatter (type, status,
-// supersedes, related) AND the fields the embedder puts into a note's vector chunk
-// (title, do, dont, why, tags; see ChunkText). It is stamped onto each vector as
-// note_hash, so if it omitted the chunk fields, editing a gotcha's do/dont/why/title/
-// tags would change the embedding input WITHOUT changing the staleness key, and the
-// pre-correction vector would keep being served until a manual re-embed. Including them
-// means such an edit invalidates the stale vector (and forces a cheap note reindex).
+// supersedes, related, template metadata) and every embedding input (title,
+// authored body, tags, and historical prose retained by the legacy adapter; see
+// ChunkText). It is stamped onto each vector as note_hash, so edits to retrieval
+// content invalidate stale vectors and trigger a note reindex.
 // The id is included because it is the node identity: an id-only edit must retire the
 // old node and create the new one, so the drift check has to see it.
 //
@@ -408,10 +409,23 @@ func retrievalHash(pn *ParsedNote) string {
 	// Embedding-chunk fields (ChunkText): a change here must invalidate the vector.
 	h.Write([]byte{0})
 	h.Write([]byte(titleOf(pn)))
-	for _, s := range []string{pn.FM.Do, pn.FM.Dont, pn.FM.Why} {
+	for _, name := range []string{"do", "dont", "why"} {
+		s := vault.ReadLegacy(pn.FM).Values()[name]
 		h.Write([]byte{0})
 		h.Write([]byte(s))
 	}
+	// All authoring metadata affects reader cards, section validation, or navigation.
+	for _, s := range []string{pn.FM.Template, pn.FM.Summary, pn.FM.VerifiedAt} {
+		h.Write([]byte{0})
+		h.Write([]byte(s))
+	}
+	authoring, _ := json.Marshal(struct {
+		Version     int
+		Collections vault.StringList
+		Blocks      []vault.BlockMetadata
+	}{pn.FM.TemplateVersion, pn.FM.Collections, pn.FM.Blocks})
+	h.Write([]byte{0})
+	h.Write(authoring)
 	for _, s := range pn.FM.Tags {
 		h.Write([]byte{0})
 		h.Write([]byte(s))
@@ -433,7 +447,7 @@ func retrievalHash(pn *ParsedNote) string {
 		h.Write([]byte{0})
 		h.Write([]byte(s))
 	}
-	for _, s := range []string{pn.FM.Updated, pn.FM.When, pn.FM.ReviewBy, pn.FM.Source} {
+	for _, s := range []string{pn.FM.Updated, pn.FM.When, pn.FM.ReviewBy, pn.FM.Source, pn.FM.SourceURL} {
 		h.Write([]byte{0})
 		h.Write([]byte(s))
 	}

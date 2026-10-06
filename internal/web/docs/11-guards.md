@@ -8,14 +8,21 @@ happen again".
 ## How it works
 
 ```
-mesh guards list       # gotchas that have a concrete anti-pattern (guard candidates)
-mesh guards suggest    # the LLM proposes a real check for each (review before enabling)
+mesh guards list       # authored troubleshooting notes and their evidence
+mesh guards suggest    # candidate checks; review before enabling
 ```
 
-`suggest` takes each high-confidence gotcha that has a concrete "dont" (an anti-pattern
-to detect) and asks your own LLM to propose a guard: a grep-style regex, the file globs
-it applies to, a failure message, and a severity. Gotchas that are about judgment or
-architecture (not mechanically checkable) are honestly marked as not applicable.
+`suggest` reads each high-confidence troubleshooting note's authored sections and
+evidence. A guard needs an explicit current rule, a concrete detection example and
+enough context to bound where the rule applies. A symptom, incident cause, title or
+quoted example does not establish a prohibition. Incomplete or truncated authored
+content is not used to propose enforcement; resolve the source's gaps first.
+
+For a supported rule, your own LLM proposes a grep-style regex, narrow file globs, a
+failure message and a severity. Evidence limits and legitimate counterexamples matter:
+judgment, architecture, ordering and runtime behavior usually cannot be checked with a
+simple regex and are marked as not applicable. Historical notes retain their original
+field meanings when read; new notes use the purpose-specific template.
 
 The applicable ones are emitted as a paste-ready bash block you can drop into your
 pre-commit hook. For example, the gotcha "use bun, not npm" becomes a check that flags
@@ -23,8 +30,9 @@ pre-commit hook. For example, the gotcha "use bun, not npm" becomes a check that
 
 ## You are the gate
 
-This is a human-in-the-loop tool, on purpose. Mesh proposes; you review and paste in
-the ones that fit. The generated script is a starting point: patterns that need
+Mesh proposes; you review the generated checks before enabling the ones that fit.
+This review concerns executable enforcement, not approval of ordinary notes. The
+generated script is a starting point: patterns that need
 lookahead (which `grep -E` cannot run) are skipped with a note rather than emitted
 broken. A guard that fires on legitimate code is worse than no guard, so review first.
 

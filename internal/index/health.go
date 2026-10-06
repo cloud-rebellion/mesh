@@ -198,8 +198,8 @@ func (s *Store) scanHealthContext(ctx context.Context, vaultRoot string, now tim
 	return findings, ctx.Err()
 }
 
-// tier0Health are the institutional types whose do/dont guidance is worth checking
-// for contradictions.
+// tier0Health are the institutional types eligible for explicit guidance checks.
+// Modern methods and procedures are included separately by their template.
 var tier0Health = map[string]bool{"decision": true, "gotcha": true, "post-mortem": true}
 
 // ComputeContradictions runs ScanContradictions and replaces the contradiction rows.
@@ -211,9 +211,9 @@ func (s *Store) ComputeContradictions(now time.Time) ([]HealthFinding, error) {
 	return findings, s.RecordHealth("contradiction", findings, now)
 }
 
-// ScanContradictions flags pairs of tier-0 notes that share a tag where one
-// note's `do` strongly overlaps the other's `dont` (one recommends what the other
-// forbids). Dependency-free heuristic (token Jaccard, high threshold to stay
+// ScanContradictions flags pairs of eligible notes that share a tag where one
+// note's explicit recommendation strongly overlaps the other's explicit prohibition.
+// Dependency-free heuristic (token Jaccard, high threshold to stay
 // high-precision); the curator can later confirm with an LLM. Pure computation over the
 // index's read side, writing nothing, for the same reason as ScanHealth.
 func (s *Store) ScanContradictions() ([]HealthFinding, error) {
@@ -238,14 +238,14 @@ func contradictionFindings(notes []guidanceRow) []HealthFinding {
 
 func contradictionFindingsContext(ctx context.Context, notes []guidanceRow) ([]HealthFinding, error) {
 	const threshold = 0.6
-	doTokens := make([]map[string]bool, len(notes))
-	dontTokens := make([]map[string]bool, len(notes))
+	recommendedTokens := make([]map[string]bool, len(notes))
+	forbiddenTokens := make([]map[string]bool, len(notes))
 	byTag := map[string][]int{}
 	for i, n := range notes {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		doTokens[i], dontTokens[i] = tokenSet(n.do), tokenSet(n.dont)
+		recommendedTokens[i], forbiddenTokens[i] = tokenSet(n.recommended), tokenSet(n.forbidden)
 		tags := map[string]bool{}
 		for _, tag := range n.tags {
 			tag = strings.ToLower(tag)
@@ -263,7 +263,7 @@ func contradictionFindingsContext(ctx context.Context, notes []guidanceRow) ([]H
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if len(doTokens[i]) == 0 {
+		if len(recommendedTokens[i]) == 0 {
 			continue
 		}
 		candidates = candidates[:0]
@@ -281,12 +281,12 @@ func contradictionFindingsContext(ctx context.Context, notes []guidanceRow) ([]H
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			a, b := len(doTokens[i]), len(dontTokens[j])
+			a, b := len(recommendedTokens[i]), len(forbiddenTokens[j])
 			// Even complete containment cannot reach the threshold at this size ratio.
 			if b == 0 || float64(min(a, b))/float64(max(a, b)) < threshold {
 				continue
 			}
-			if jaccard(doTokens[i], dontTokens[j]) < threshold {
+			if jaccard(recommendedTokens[i], forbiddenTokens[j]) < threshold {
 				continue
 			}
 			// One unordered finding per pair.
@@ -305,8 +305,8 @@ func contradictionFindingsContext(ctx context.Context, notes []guidanceRow) ([]H
 }
 
 type guidanceRow struct {
-	id, path, do, dont string
-	tags               []string
+	id, path, recommended, forbidden string
+	tags                             []string
 }
 
 func (s *Store) tier0Guidance() ([]guidanceRow, error) {
@@ -314,33 +314,39 @@ func (s *Store) tier0Guidance() ([]guidanceRow, error) {
 }
 
 func (s *Store) tier0GuidanceContext(ctx context.Context) ([]guidanceRow, error) {
-	rows, err := s.readDB.QueryContext(ctx, `SELECT id, path, type, frontmatter FROM notes`)
+	rows, err := s.readDB.QueryContext(ctx, `SELECT n.id, n.path, n.type, n.frontmatter, COALESCE(gn.attrs, '{}') FROM notes n LEFT JOIN nodes gn ON gn.id = 'note:' || n.id WHERE 1=1`+draftPredicate)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []guidanceRow
 	for rows.Next() {
-		var id, path, typ, fmJSON string
-		if err := rows.Scan(&id, &path, &typ, &fmJSON); err != nil {
+		var id, path, typ, fmJSON, attrsJSON string
+		if err := rows.Scan(&id, &path, &typ, &fmJSON, &attrsJSON); err != nil {
 			return nil, err
 		}
-		if !tier0Health[typ] {
+		var fm vault.Frontmatter
+		if json.Unmarshal([]byte(fmJSON), &fm) != nil {
 			continue
 		}
-		var fm struct {
-			Do   string   `json:"Do"`
-			Dont string   `json:"Dont"`
-			Tags []string `json:"Tags"`
+		if !tier0Health[typ] && fm.Template != "method" && fm.Template != "procedure" {
+			continue
 		}
-		_ = json.Unmarshal([]byte(fmJSON), &fm)
-		do, dont := normalizeGuidance(fm.Do), normalizeGuidance(fm.Dont)
-		if do == "" && dont == "" {
+		recommended, forbidden, _ := vault.LegacyGuidance(&fm)
+		if fm.Template != "" || fm.TemplateVersion != 0 {
+			var attrs struct {
+				Behavior behaviorGuidance `json:"reader_behavior"`
+			}
+			_ = json.Unmarshal([]byte(attrsJSON), &attrs)
+			recommended, forbidden = attrs.Behavior.Recommended, attrs.Behavior.Forbidden
+		}
+		recommended, forbidden = normalizeGuidance(recommended), normalizeGuidance(forbidden)
+		if recommended == "" && forbidden == "" {
 			continue
 		}
 		out = append(out, guidanceRow{
 			id: id, path: path,
-			do: do, dont: dont, tags: fm.Tags,
+			recommended: recommended, forbidden: forbidden, tags: fm.Tags,
 		})
 	}
 	return out, rows.Err()
@@ -371,9 +377,9 @@ func tokenSet(s string) map[string]bool {
 }
 
 // normalizeGuidance removes scaffold placeholders before contradiction analysis.
-// Notes created from the post-mortem template may still carry TODO/TBD values in
-// do/dont; treating those literals as guidance makes every note sharing a tag
-// appear contradictory with every other scaffolded note.
+// Historical notes may still carry TODO/TBD values in their legacy guidance.
+// Treating those literals as guidance would create spurious conflicts between
+// otherwise unrelated incomplete notes sharing a tag.
 func normalizeGuidance(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", "todo", "tbd", "n/a", "na", "none", "-":

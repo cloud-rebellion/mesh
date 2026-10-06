@@ -28,22 +28,8 @@ import (
 // rename installs a NEW file over the old name, so os.SameFile is false afterwards, and a
 // second hard link to the original still holds the ORIGINAL bytes instead of the truncated
 // ones. os.WriteFile fails both. This test therefore fails on any regression back to a
-// truncating writer, for every one of the four entry points.
+// truncating writer, for every active entry point.
 func TestNoteRewriteReplacesInsteadOfTruncating(t *testing.T) {
-	const gotchaBody = "---\n" +
-		"id: g1\n" +
-		"type: gotcha\n" +
-		"title: A gotcha\n" +
-		"when: \"2026-01-01\"\n" +
-		"do: run the migration first\n" +
-		"dont: deploy before it lands\n" +
-		"why: the schema moved\n" +
-		"---\n" +
-		"\n# A gotcha\n\n" +
-		"## Symptom\n<!-- TODO: how the problem shows up -->\n\n" +
-		"## Cause\n<!-- TODO: the root cause -->\n\n" +
-		"## Fix\n<!-- TODO: the resolution or workaround -->\n"
-
 	cases := []struct {
 		name    string
 		content string
@@ -69,12 +55,6 @@ func TestNoteRewriteReplacesInsteadOfTruncating(t *testing.T) {
 				return BackfillRelatedFile(path, []string{"other-note"}, false)
 			},
 			want: "- other-note",
-		},
-		{
-			name:    "BackfillBodyFile",
-			content: gotchaBody,
-			rewrite: func(path string) (*MigrateResult, error) { return BackfillBodyFile(path, false) },
-			want:    "## Fix\nrun the migration first",
 		},
 	}
 
@@ -202,7 +182,7 @@ func TestCreateNoteKeepsExclusiveClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := CreateNote(root, NewNoteSpec{Type: TypeGotcha, Title: "Taken title", Do: "d", Dont: "n", Why: "w"})
+	res, err := CreateNote(root, completeFixtureSpec(NewNoteSpec{Type: TypeGotcha, Title: "Taken title", Do: "d", Dont: "n", Why: "w"}))
 	if err != nil {
 		t.Fatalf("CreateNote: %v", err)
 	}
@@ -256,7 +236,7 @@ func BenchmarkCreateNote(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// A distinct title per iteration, so the suffix search stays one attempt and the
 		// number is the write, not a scan of everything the benchmark already wrote.
-		spec := NewNoteSpec{Type: TypeGotcha, Title: "benchmark note " + strconv.Itoa(i), Do: "d", Dont: "n", Why: "w"}
+		spec := completeFixtureSpec(NewNoteSpec{Type: TypeGotcha, Title: "benchmark note " + strconv.Itoa(i), Do: "d", Dont: "n", Why: "w"})
 		if _, err := CreateNote(root, spec); err != nil {
 			b.Fatal(err)
 		}

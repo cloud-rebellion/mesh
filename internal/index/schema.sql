@@ -177,7 +177,8 @@ CREATE TABLE IF NOT EXISTS pending_notes (
   why        TEXT,
   confidence TEXT,
   source     TEXT,                -- session id / transcript that produced it
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  authoring_json TEXT NOT NULL DEFAULT '' -- structured draft; empty retains historical fields
 );
 
 -- note_code_links: which notes reference which code symbols (the note<->code bridge).

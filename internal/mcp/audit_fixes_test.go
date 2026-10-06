@@ -411,7 +411,7 @@ func TestWriteBackReconcilesIncrementally(t *testing.T) {
 	// full reindex every later row is renumbered, under an incremental one it is not.
 	args, _ := json.Marshal(map[string]any{
 		"type": "gotcha", "title": "Incremental writeback",
-		"do": "reconcile", "dont": "reindex the world", "why": "write cost must track the change",
+		"summary": "Reconcile the changed note to keep publication cost proportional to the change.", "sections": fixtureSections("gotcha"),
 	})
 	if _, rerr := s.toolWrite(WithLocalOperator(context.Background()), args, ""); rerr != nil {
 		t.Fatalf("write: %v", rerr)

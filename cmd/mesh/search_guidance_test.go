@@ -10,7 +10,7 @@ import (
 
 func TestSearchPrintsIncompleteGuidance(t *testing.T) {
 	dir := t.TempDir()
-	writeNote(t, dir, "guidance.md", "---\nid: guidance\ntype: gotcha\nwhen: 2026-09-23\n---\n# Guidanceneedle\nHistorical context\n")
+	writeNote(t, dir, "guidance.md", "---\nid: guidance\ntype: note\ntemplate: finding\ntemplate_version: 1\nwhen: 2026-09-23\n---\n# Guidanceneedle\nHistorical context\n")
 	if out, err := runCLI(t, indexCmd(), dir); err != nil {
 		t.Fatalf("index: %v: %s", err, out)
 	}
@@ -18,7 +18,7 @@ func TestSearchPrintsIncompleteGuidance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("search: %v: %s", err, out)
 	}
-	if !strings.Contains(out, "Incomplete guidance: missing do, dont, why; verify before relying on this note.") {
+	if !strings.Contains(out, "Incomplete authored content: summary, question, findings, evidence, limitations, next_steps; review the source before relying on this note.") {
 		t.Fatalf("CLI lost guidance warning: %s", out)
 	}
 }

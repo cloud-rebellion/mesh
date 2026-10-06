@@ -24,17 +24,18 @@ const (
 	TypeEntity     NoteType = "entity"
 	TypeConcept    NoteType = "concept"
 	TypeMap        NoteType = "map"
+	TypeStatus     NoteType = "status"
 )
 
 var validTypes = map[NoteType]bool{
 	TypeNote: true, TypePostMortem: true, TypeDecision: true,
-	TypeGotcha: true, TypeEntity: true, TypeConcept: true, TypeMap: true,
+	TypeGotcha: true, TypeEntity: true, TypeConcept: true, TypeMap: true, TypeStatus: true,
 }
 
 func (t NoteType) Valid() bool { return validTypes[t] }
 
-// RequiresFlywheel reports whether do/dont/why are mandatory for this type.
-// These are the institutional-memory types that fuel tier-0 retrieval.
+// RequiresFlywheel identifies legacy institutional-memory layouts.
+// Deprecated: modern completeness is defined by a versioned template.
 func (t NoteType) RequiresFlywheel() bool {
 	return t == TypeDecision || t == TypeGotcha || t == TypePostMortem
 }
@@ -76,18 +77,29 @@ func ExemptsDeadRef(paths []string, ref string) bool {
 // Frontmatter is the whitelisted view of a note's YAML header. Raw YAML is
 // never spread into storage; only known keys are kept (the JSONB house rule).
 type Frontmatter struct {
-	ID      string     `yaml:"id"`
-	Type    NoteType   `yaml:"type"`
-	Title   string     `yaml:"title"`
-	When    string     `yaml:"when"`
-	Created string     `yaml:"created,omitempty"`
-	Updated string     `yaml:"updated,omitempty"`
-	Related StringList `yaml:"related,omitempty"`
-	Tags    StringList `yaml:"tags,omitempty"`
-	Do      string     `yaml:"do,omitempty"`
-	Dont    string     `yaml:"dont,omitempty"`
-	Why     string     `yaml:"why,omitempty"`
-	Status  string     `yaml:"status,omitempty"`
+	ID      string   `yaml:"id"`
+	Type    NoteType `yaml:"type"`
+	Title   string   `yaml:"title"`
+	When    string   `yaml:"when"`
+	Created string   `yaml:"created,omitempty"`
+	Updated string   `yaml:"updated,omitempty"`
+	// Authoring identity and discovery metadata. Prose is stored only in the body.
+	Template        string          `yaml:"template,omitempty"`
+	TemplateVersion int             `yaml:"template_version,omitempty"`
+	Summary         string          `yaml:"summary,omitempty"`
+	Collections     StringList      `yaml:"collections,omitempty"`
+	Blocks          []BlockMetadata `yaml:"blocks,omitempty"`
+	// VerifiedAt never follows Updated automatically. It requires explicit evidence.
+	VerifiedAt    string            `yaml:"verified_at,omitempty"`
+	BodySummary   string            `yaml:"-"`
+	Sections      map[string]string `yaml:"-"`
+	BlockContents []BlockSpec       `yaml:"-"`
+	Related       StringList        `yaml:"related,omitempty"`
+	Tags          StringList        `yaml:"tags,omitempty"`
+	Do            string            `yaml:"do,omitempty"`
+	Dont          string            `yaml:"dont,omitempty"`
+	Why           string            `yaml:"why,omitempty"`
+	Status        string            `yaml:"status,omitempty"`
 	// ExpectDeadRefs marks a note whose subject IS a deletion: the file paths it cites
 	// are meant to be gone, so dead_ref would flag it forever and correctly. Six such
 	// notes (retired services, an old audit) were permanently red, and a health check
@@ -221,16 +233,17 @@ func (f *Frontmatter) Validate() []string {
 	if f.When == "" {
 		errs = append(errs, "missing when")
 	}
-	if f.Type.RequiresFlywheel() {
-		if unfilled(f.Do) {
-			errs = append(errs, "do not filled (required for "+string(f.Type)+")")
+	if f.Template != "" || f.TemplateVersion != 0 {
+		t, err := TemplateFor(f.Template, f.TemplateVersion)
+		if err != nil {
+			errs = append(errs, err.Error())
+		} else if t.Type != f.Type {
+			errs = append(errs, "template does not match note type")
 		}
-		if unfilled(f.Dont) {
-			errs = append(errs, "dont not filled (required for "+string(f.Type)+")")
-		}
-		if unfilled(f.Why) {
-			errs = append(errs, "why not filled (required for "+string(f.Type)+")")
-		}
+	} else {
+		// Historical placeholders are reported by the isolated legacy adapter.
+		// This does not impose a triad contract on modern notes.
+		errs = append(errs, ReadLegacy(f).Missing()...)
 	}
 	return errs
 }

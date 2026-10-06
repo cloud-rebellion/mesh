@@ -98,7 +98,7 @@ func TestCreateNoteRefusesOverlongTitle(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			res, err := CreateNote(root, NewNoteSpec{Type: TypeGotcha, Title: strings.Repeat("b", tc.slugLen)})
+			res, err := CreateNote(root, completeFixtureSpec(NewNoteSpec{Type: TypeGotcha, Title: strings.Repeat("b", tc.slugLen)}))
 			if !tc.wantErr {
 				if err != nil {
 					t.Fatalf("a %d-character slug must still be writable: %v", tc.slugLen, err)
@@ -126,7 +126,7 @@ func TestCreateNoteRefusesOverlongTitle(t *testing.T) {
 // produced "tg-rdsplan-f-r-deploy".
 func TestCreateNoteMintsGuessableSwedishID(t *testing.T) {
 	root := t.TempDir()
-	res, err := CreateNote(root, NewNoteSpec{Type: TypeGotcha, Title: "Åtgärdsplan för deploy"})
+	res, err := CreateNote(root, completeFixtureSpec(NewNoteSpec{Type: TypeGotcha, Title: "Åtgärdsplan för deploy"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,9 +144,9 @@ func TestCreateNoteValidationErrorsAreTagged(t *testing.T) {
 		name string
 		spec NewNoteSpec
 	}{
-		{"invalid type", NewNoteSpec{Type: NoteType("nonsense"), Title: "x"}},
-		{"empty title", NewNoteSpec{Type: TypeGotcha, Title: "   "}},
-		{"over-long title", NewNoteSpec{Type: TypeGotcha, Title: strings.Repeat("c", 400)}},
+		{"invalid type", completeFixtureSpec(NewNoteSpec{Type: NoteType("nonsense"), Title: "x"})},
+		{"empty title", completeFixtureSpec(NewNoteSpec{Type: TypeGotcha, Title: "   "})},
+		{"over-long title", completeFixtureSpec(NewNoteSpec{Type: TypeGotcha, Title: strings.Repeat("c", 400)})},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

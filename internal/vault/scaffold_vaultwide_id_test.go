@@ -20,11 +20,11 @@ import (
 // TestCreateNoteClaimsIDsAcrossTheWholeVault: same title, two types, two distinct ids.
 func TestCreateNoteClaimsIDsAcrossTheWholeVault(t *testing.T) {
 	dir := t.TempDir()
-	first, err := CreateNote(dir, NewNoteSpec{Type: TypeGotcha, Title: "Deploy times out"})
+	first, err := CreateNote(dir, completeFixtureSpec(NewNoteSpec{Type: TypeGotcha, Title: "Deploy times out"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := CreateNote(dir, NewNoteSpec{Type: TypeDecision, Title: "Deploy times out"})
+	second, err := CreateNote(dir, completeFixtureSpec(NewNoteSpec{Type: TypeDecision, Title: "Deploy times out"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestCreateNoteYieldsToAHandWrittenNoteInAnotherFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := CreateNote(dir, NewNoteSpec{Type: TypeGotcha, Title: "Deploy times out"})
+	res, err := CreateNote(dir, completeFixtureSpec(NewNoteSpec{Type: TypeGotcha, Title: "Deploy times out"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestClaimedIDsSurvivesAnUnreadableFolder(t *testing.T) {
 	if _, err := ClaimedIDs(dir); err != nil {
 		t.Errorf("an unreadable folder must not fail the id scan: %v", err)
 	}
-	if _, err := CreateNote(dir, NewNoteSpec{Type: TypeGotcha, Title: "Still writable"}); err != nil {
+	if _, err := CreateNote(dir, completeFixtureSpec(NewNoteSpec{Type: TypeGotcha, Title: "Still writable"})); err != nil {
 		t.Errorf("an unreadable folder elsewhere in the vault must not fail a note write: %v", err)
 	}
 }

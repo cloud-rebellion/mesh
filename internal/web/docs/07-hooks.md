@@ -94,3 +94,35 @@ delete the vault folder yourself if you want those gone.
 - **Enforce write-back** also adds the Stop nudge. Use it when you want the flywheel
   to actually turn, the agent gets one reminder per session to capture what it
   learned. You can always switch with `uninstall` then `install --read-only`.
+
+
+## Purpose-specific write-back
+
+The Stop nudge asks the agent to choose a template with `mesh_note_template`,
+then author its summary and meaningful sections with supporting evidence and
+verification limits. Empty or unverified fields stay explicit in a draft; they
+must not be invented to satisfy a checklist.
+
+Automatic extraction proposes review drafts using the same versioned template
+registry as the writer. The review queue does not publish knowledge until a
+reviewer has supplied the required content and checked its references. Historical
+suggestions remain available as original content for a reviewed rewrite. At the
+queue limit, admission stops rather than deleting unreviewed suggestions.
+
+
+Purpose-specific sections accept normal Markdown: paragraphs, bullet and ordered
+lists, tables, fenced code and diagrams. Formatting a section does not require a
+new library template or approval. Keep code and verification context explicit;
+choose optional supporting blocks when their extra source or verification fields
+are useful.
+
+
+## Hosted folder-permission limitation
+
+The current pending-review publisher refuses configured folder rules, including
+admin requests. A per-author read callback does not establish who can read the
+destination note. Identified members can publish when the provider confirms that no
+folder rules exist. A shared-token unrestricted callback does not prove that absence
+and remains refused. Refused suggestions remain readable and can be discarded.
+This limitation requires audience-aware folder publication support; it does not add
+approval to ordinary notes.

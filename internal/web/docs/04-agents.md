@@ -25,14 +25,19 @@ back before finishing, automatically.
 
 ## The retrieval contract
 
-1. Orient with `mesh_god_nodes` (the most-connected notes are the entry points).
-2. `mesh_search` with a token budget; reason over the returned cards.
-3. `mesh_fetch` only when a card is not enough (optionally one heading via an anchor).
-4. Walk with `mesh_neighbors` and `mesh_community` instead of fetching whole files.
+1. Use the relevant collection or `mesh_search` to find a starting point. Hubs from
+   `mesh_god_nodes` can help; they are not a mandatory first hop.
+2. Search with a token budget; compare the returned cards, completeness and dates.
+3. `mesh_fetch` only when a card is not enough, using a section's stable anchor when
+   the question concerns one part of a note.
+4. Follow supported links with `mesh_neighbors` and `mesh_community` when the
+   relationship helps answer the question.
 5. On resume, `mesh_changed_since` returns only what changed.
-6. Write back with `mesh_append_note` (decision / gotcha / post-mortem, with a one-line
-   do / dont / why) so the next agent inherits the judgment. Mesh fills in the id,
-   timestamp, and placement. Use `mesh_write_entity` for a system/tool/concept page.
+6. Choose a purpose-specific schema with `mesh_templates` and `mesh_note_template`.
+   Use `mesh_author_note` to prepare, validate, save a draft or publish authored
+   sections. Keep claims tied to evidence and uncertainty; link existing notes only
+   when the relationship is supported. Mesh derives identity, dates and placement.
+   Complete ordinary notes need no approval. Missing facts belong in a draft.
 7. If you edited files directly, `mesh_reindex` makes them queryable now.
 
 ## The full toolset
@@ -56,8 +61,13 @@ Source code (see "The code index"):
 
 Write-back:
 
-- `mesh_append_note` record a decision / gotcha / post-mortem.
-- `mesh_write_entity` create a system / tool / concept page.
+- `mesh_templates` list the available note and supporting-block templates.
+- `mesh_note_template` / `mesh_block_template` inspect one selected schema.
+- `mesh_author_note` prepare, validate, draft or publish through the shared writer.
+- `mesh_drafts` find incomplete notes and their current revision before resuming them.
+- `mesh_append_note` / `mesh_write_entity` aliases using the same template writer.
+- `mesh_propose_template` save a library proposal. New or changed reusable templates
+  and blocks require approval; ordinary notes and Markdown formatting do not.
 - `mesh_reindex` re-read the vault now (after editing files directly).
 
 Secrets. These three need an attached **secret bridge**: an external secret manager
@@ -89,5 +99,7 @@ matches local. Normal-route economics stay in content-free local counters; an
 exceptional fallback includes a tiny receipt so it cannot masquerade as model-ranked
 output.
 
-Editing through your editor (not a write API) is the intended path; the watcher or
-`mesh_reindex` keeps the index in lockstep. The API tab lists every tool and its schema.
+You can author normal Markdown inside the selected sections through your editor or
+the shared write API. Paragraphs, lists, tables, code and diagrams need no separate
+approval. The watcher or `mesh_reindex` keeps direct edits queryable. The API tab lists
+the tools and their schemas.

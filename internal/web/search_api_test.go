@@ -17,7 +17,7 @@ import (
 
 func TestSearchMissingGuidanceAPI(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "n.md"), []byte("---\nid: n\ntype: decision\nwhen: 2026-09-23\n---\n# Guidanceneedle\nHistorical context\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "n.md"), []byte("---\nid: n\ntype: note\ntemplate: finding\ntemplate_version: 1\nwhen: 2026-09-23\n---\n# Guidanceneedle\nHistorical context\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	seedIndex(t, dir)
@@ -26,7 +26,7 @@ func TestSearchMissingGuidanceAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	code, got := doJSON(t, s.Handler(), "GET", "/api/search?q=guidanceneedle&budget=200", "")
+	code, got := doJSON(t, s.Handler(), "GET", "/api/search?q=guidanceneedle&budget=400", "")
 	if code != http.StatusOK {
 		t.Fatalf("search = %d, %v", code, got)
 	}
@@ -34,11 +34,11 @@ func TestSearchMissingGuidanceAPI(t *testing.T) {
 	if len(cards) != 1 {
 		t.Fatalf("expected one card: %v", got)
 	}
-	if missing := cards[0].(map[string]any)["MissingGuidance"]; !reflect.DeepEqual(missing, []any{"do", "dont", "why"}) {
+	if missing := cards[0].(map[string]any)["MissingGuidance"]; !reflect.DeepEqual(missing, []any{"summary", "question", "findings", "evidence", "limitations", "next_steps"}) {
 		t.Fatalf("web API lost warning: %v", cards)
 	}
 	b, _ := json.Marshal(cards)
-	if tokens := retrieve.EstimateTokens(string(b)); tokens > 200 || float64(tokens) > got["tokens"].(float64) {
+	if tokens := retrieve.EstimateTokens(string(b)); tokens > 400 || float64(tokens) > got["tokens"].(float64) {
 		t.Fatalf("web API budget understated: %d, %v", tokens, got)
 	}
 }

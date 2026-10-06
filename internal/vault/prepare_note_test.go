@@ -15,9 +15,9 @@ func TestPrepareNoteContextRendersWithoutPublishing(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "index.md"), []byte("# Vault\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p, err := PrepareNoteContext(context.Background(), root, NewNoteSpec{
+	p, err := PrepareNoteContext(context.Background(), root, completeFixtureSpec(NewNoteSpec{
 		Type: TypeDecision, Title: "Committed by hub", Do: "ship", Dont: "drop", Why: "team",
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

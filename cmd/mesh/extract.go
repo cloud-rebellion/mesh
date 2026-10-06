@@ -20,6 +20,7 @@ import (
 	"github.com/bright-interaction/mesh/internal/index"
 	"github.com/bright-interaction/mesh/internal/llm"
 	"github.com/bright-interaction/mesh/internal/retrieve"
+	"github.com/bright-interaction/mesh/internal/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -221,6 +222,14 @@ func writeToPending(vaultRoot, transcript string, cands []extract.Candidate, jud
 	queued, dupes, filtered := 0, 0, 0
 	var queuedOps []string
 	for _, cnd := range cands {
+		if cnd.Template == "" {
+			return fmt.Errorf("candidate requires modern template authoring")
+		}
+		spec, err := vault.NormalizeSpec(cnd.Spec())
+		if err != nil {
+			return fmt.Errorf("invalid candidate: %w", err)
+		}
+		cnd.Type = string(spec.Type)
 		if known, of := knownInVault(ctx, rtr, cnd); known {
 			dupes++
 			fmt.Printf("skip (already known): %q ~ %q\n", cnd.Title, of)
@@ -252,8 +261,10 @@ func writeToPending(vaultRoot, transcript string, cands []extract.Candidate, jud
 			}
 		}
 		pending := index.PendingNote{
-			Type: cnd.Type, Title: cnd.Title, Do: cnd.Do, Dont: cnd.Dont,
-			Why: cnd.Why, Confidence: cnd.Confidence, Source: src,
+			Type: cnd.Type, Title: cnd.Title, Template: cnd.Template, TemplateVersion: cnd.TemplateVersion,
+			Summary: cnd.Summary, Sections: cnd.Sections, Blocks: cnd.Blocks, Collections: cnd.Collections,
+			Tags: cnd.Tags, Related: cnd.Related, Supersedes: cnd.Supersedes,
+			Confidence: cnd.Confidence, Source: src,
 		}
 		if writable {
 			if err := store.AddPending(pending); err != nil {
@@ -330,7 +341,7 @@ func knownInVault(ctx context.Context, rtr *retrieve.Retriever, c extract.Candid
 	if rtr == nil {
 		return false, ""
 	}
-	cards, err := rtr.Retrieve(ctx, c.Title+" "+c.Do, retrieve.Options{Limit: 5})
+	cards, err := rtr.Retrieve(ctx, c.Title+" "+c.Summary, retrieve.Options{Limit: 5})
 	if err != nil {
 		return false, ""
 	}
@@ -710,13 +721,14 @@ func fmtPcts(xs []float64) string {
 // judgeEvalCase is one labeled candidate: label "keep" means the panel SHOULD keep it,
 // "reject" means it SHOULD reject it.
 type judgeEvalCase struct {
-	Label      string `json:"label"`
-	Type       string `json:"type"`
-	Title      string `json:"title"`
-	Do         string `json:"do"`
-	Dont       string `json:"dont"`
-	Why        string `json:"why"`
-	Confidence string `json:"confidence"`
+	Label           string            `json:"label"`
+	Type            string            `json:"type,omitempty"`
+	Template        string            `json:"template"`
+	TemplateVersion int               `json:"template_version"`
+	Title           string            `json:"title"`
+	Summary         string            `json:"summary"`
+	Sections        map[string]string `json:"sections"`
+	Confidence      string            `json:"confidence"`
 }
 
 // evalResult is the confusion matrix of a judge-eval run (label "keep" = positive class).
@@ -743,7 +755,7 @@ func evalCases(ctx context.Context, judges []llm.Client, cases []judgeEvalCase, 
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			cand := extract.Candidate{Type: c.Type, Title: c.Title, Do: c.Do, Dont: c.Dont, Why: c.Why, Confidence: c.Confidence}
+			cand := extract.Candidate{Type: c.Type, Template: c.Template, TemplateVersion: c.TemplateVersion, Title: c.Title, Summary: c.Summary, Sections: c.Sections, Confidence: c.Confidence}
 			v, e := extract.JudgePanel(ctx, judges, cand, extract.PanelMajority)
 			if e != nil {
 				kept[i].err = e.Error()
@@ -791,10 +803,22 @@ func runJudgeEval(ctx context.Context, client llm.Client, path string, concurren
 		return err
 	}
 	var fx struct {
-		Cases []judgeEvalCase `json:"cases"`
+		Doc           string          `json:"_doc"`
+		FormatVersion int             `json:"format_version"`
+		Cases         []judgeEvalCase `json:"cases"`
 	}
-	if err := json.Unmarshal(raw, &fx); err != nil {
-		return fmt.Errorf("parse fixture: %w", err)
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&fx); err != nil {
+		return fmt.Errorf("parse fixture (purpose-specific template format required): %w", err)
+	}
+	for _, c := range fx.Cases {
+		if c.Template == "" {
+			return fmt.Errorf("historical judge fixture requires a reviewed purpose-specific rewrite")
+		}
+		if _, err := vault.TemplateFor(c.Template, c.TemplateVersion); err != nil {
+			return fmt.Errorf("invalid judge template: %w", err)
+		}
 	}
 	if len(fx.Cases) == 0 {
 		return fmt.Errorf("no cases in %s", path)
@@ -808,6 +832,7 @@ func runJudgeEval(ctx context.Context, client llm.Client, path string, concurren
 		for i, j := range judges {
 			descs[i] = j.Describe()
 		}
+		fmt.Fprintln(os.Stderr, "purpose-specific fixture format: metrics require a new baseline and cannot be compared directly to the retired shorthand corpus")
 		fmt.Fprintf(os.Stderr, "judge-eval: %d cases via panel [%s] (independent=%v)\n", len(fx.Cases), strings.Join(descs, ", "), independent)
 	}
 
@@ -827,7 +852,7 @@ func runJudgeEval(ctx context.Context, client llm.Client, path string, concurren
 
 	if asJSON {
 		b, _ := json.MarshalIndent(map[string]any{
-			"cases": len(fx.Cases), "errors": errs, "independent_judge": independent,
+			"cases": len(fx.Cases), "errors": errs, "independent_judge": independent, "fixture_format_version": fx.FormatVersion, "requires_rebaseline": true,
 			"good_total": good, "bad_total": bad,
 			"kept_good": tp, "rejected_good": fn, "rejected_bad": tn, "kept_bad": fp,
 			"recall_pct": recall, "specificity_pct": specificity, "accuracy_pct": accuracy,

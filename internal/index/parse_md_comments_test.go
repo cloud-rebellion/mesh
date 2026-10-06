@@ -342,7 +342,7 @@ func TestScaffoldedNoteHasNoWikilinks(t *testing.T) {
 	for _, nt := range types {
 		t.Run(string(nt), func(t *testing.T) {
 			root := t.TempDir()
-			res, err := vault.CreateNote(root, vault.NewNoteSpec{Type: nt, Title: "Fresh " + string(nt)})
+			res, err := vault.CreateNote(root, vault.NewNoteSpec{Type: nt, Title: "Fresh " + string(nt), Status: "draft"})
 			if err != nil {
 				t.Fatalf("CreateNote(%s): %v", nt, err)
 			}

@@ -1220,7 +1220,7 @@ func toolCallNeedsGraph(params json.RawMessage) bool {
 	if err := json.Unmarshal(params, &call); err != nil {
 		return true
 	}
-	return call.Name != "mesh_fetch" && call.Name != "mesh_fetch_many"
+	return call.Name != "mesh_fetch" && call.Name != "mesh_fetch_many" && call.Name != "mesh_templates" && call.Name != "mesh_note_template" && call.Name != "mesh_block_template"
 }
 
 func (s *Server) handleInitialize(ctx context.Context, params json.RawMessage) any {

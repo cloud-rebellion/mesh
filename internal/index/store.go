@@ -123,7 +123,7 @@ type reuseEvent struct {
 // `supersedes` was already retrieval-hashed, so a v6 index over unchanged Markdown looks
 // perfectly current to DriftReport even though it lacks that derived state. The semantic
 // bump forces one graph rebuild; kept vectors and their model metadata survive it.
-const SchemaVersion = 7
+const SchemaVersion = 8
 
 type job struct {
 	ctx   context.Context
@@ -635,7 +635,7 @@ var schemaKeep = map[string]bool{"metrics": true, "vectors": true, "note_reuse":
 // the escape hatch is real: bumping it DOES drop and rebuild the kept tables. It used to
 // be declared and never read, which made the documented remedy a no-op and would have
 // left a newly-added column failing at INSERT time on every deployed hub.
-const keepShapeVersion = 1
+const keepShapeVersion = 2
 
 // metaKeptWithVectors are meta keys that DESCRIBE a schemaKeep table and therefore have
 // to survive the schema-version rebuild alongside it. `vectors` is kept so a version bump
@@ -1021,7 +1021,7 @@ var keptSchemaProbes = []schemaProbe{
 	{"vectors", `SELECT node_id,chunk_ix,model,dim,embedding,content_hash,note_hash FROM vectors LIMIT 0`},
 	{"metrics", `SELECT key,value FROM metrics LIMIT 0`},
 	{"note_reuse", `SELECT note_id,authored_at,source,reuse_count,first_reuse,last_reuse FROM note_reuse LIMIT 0`},
-	{"pending_notes", `SELECT id,type,title,do_text,dont_text,why,confidence,source,created_at FROM pending_notes LIMIT 0`},
+	{"pending_notes", `SELECT id,type,title,do_text,dont_text,why,confidence,source,created_at,authoring_json FROM pending_notes LIMIT 0`},
 }
 
 func allSchemaProbes() []schemaProbe {
@@ -1194,6 +1194,14 @@ func ensureSchemaOn(ctx context.Context, db schemaConnection, allowRebuild, dbEx
 	if current > SchemaVersion || currentKeep > keepShapeVersion {
 		return fmt.Errorf("%w: %w: index schema v%d / kept-table shape v%d, but this binary supports v%d / v%d; upgrade Mesh and leave this index untouched",
 			ErrSchemaMismatch, ErrSchemaTooNew, current, currentKeep, SchemaVersion, keepShapeVersion)
+	}
+
+	// Version 2 extends pending drafts in place. Never rebuild this table: its
+	// unreviewed contents have no Markdown copy. Readers must wait for the owner.
+	if dbExisted && currentKeep < 2 && allowRebuild {
+		if err := migratePendingAuthoring(ctx, db); err != nil {
+			return err
+		}
 	}
 
 	var invalidKept []string
@@ -1901,4 +1909,22 @@ func (s *Store) checkpointTruncateBestEffortAuthorized() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_, _ = db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
+}
+
+// migratePendingAuthoring is additive and runs inside the schema transaction.
+// Verify the historical shape first so unrelated damage cannot authorize mutation.
+func migratePendingAuthoring(ctx context.Context, db schemaConnection) error {
+	if err := validateSchemaProbes(ctx, db, []schemaProbe{{"pending_notes", `SELECT id,type,title,do_text,dont_text,why,confidence,source,created_at FROM pending_notes LIMIT 0`}}); err != nil {
+		if isSchemaShapeError(err) {
+			return nil
+		} // ordinary schema recovery handles absent/damaged tables
+		return err
+	}
+	if err := validateSchemaProbes(ctx, db, []schemaProbe{{"pending_notes", `SELECT authoring_json FROM pending_notes LIMIT 0`}}); err == nil {
+		return nil
+	} else if !isSchemaShapeError(err) {
+		return err
+	}
+	_, err := db.ExecContext(ctx, `ALTER TABLE pending_notes ADD COLUMN authoring_json TEXT NOT NULL DEFAULT ''`)
+	return err
 }

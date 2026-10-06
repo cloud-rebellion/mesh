@@ -58,7 +58,7 @@ func TestKeptTableShapeGuard(t *testing.T) {
 		"metrics":       "976162c7f6",
 		"vectors":       "f7efe75545",
 		"note_reuse":    "09ecef0eb3",
-		"pending_notes": "f73b61b7ed",
+		"pending_notes": "136c212730",
 	}
 	for name := range schemaKeep {
 		got := keptTableFingerprint(t, name)

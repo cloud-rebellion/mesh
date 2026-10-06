@@ -32,7 +32,7 @@ func TestHTTPWritePreparationTimesOutWithoutLatePublication(t *testing.T) {
 		// even an empty type directory or a late note after the response.
 		return vault.CreateNoteContext(ctx, s.vaultRoot, spec)
 	})
-	requestBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mesh_append_note","arguments":{"title":"Never publish after deadline","type":"note","related":["fixture"]}}}`
+	requestBody := string(mustJSON(map[string]any{"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":map[string]any{"name":"mesh_append_note", "arguments": fixtureNote("Never publish after deadline")}}))
 	r := httptest.NewRequest("POST", "/mcp", strings.NewReader(requestBody))
 	w := httptest.NewRecorder()
 	start := time.Now()
@@ -70,7 +70,7 @@ func TestWritePreparationUsesProductionDeadline(t *testing.T) {
 		return nil, errors.New("fixture preparation failure")
 	})
 	_, rerr := s.toolWrite(context.Background(), mustJSON(map[string]any{
-		"title": "Production deadline", "related": []string{"fixture"},
+		"title": "Production deadline", "summary": "Publication deadline fixture.", "sections": fixtureSections("note"),
 	}), "")
 	if rerr == nil || preparation == nil || preparation.Err() != context.Canceled {
 		t.Fatalf("default preparation context was not cancelled after return: %v", rerr)
@@ -92,7 +92,7 @@ func TestExpiredPreparationCannotUndoDurableSuccess(t *testing.T) {
 		return res, nil
 	})
 	res, rerr := s.toolWrite(context.Background(), mustJSON(map[string]any{
-		"title": "Durable despite expired preparation", "type": "note", "related": []string{"fixture"},
+		"title": "Durable despite expired preparation", "type": "note", "summary": "Publication deadline fixture.", "sections": fixtureSections("note"),
 	}), "")
 	if rerr != nil {
 		t.Fatalf("durable publication was misreported as a failed write: %v", rerr)
@@ -119,7 +119,7 @@ func TestWritePreparationKeepsEarlierCallerDeadlineAndCancelsTimer(t *testing.T)
 		}
 		return nil, errors.New("fixture preparation failure")
 	})
-	_, rerr := s.toolWrite(ctx, mustJSON(map[string]any{"title": "Caller deadline", "related": []string{"fixture"}}), "")
+	_, rerr := s.toolWrite(ctx, mustJSON(map[string]any{"title": "Caller deadline", "summary": "Publication deadline fixture.", "sections": fixtureSections("note")}), "")
 	if rerr == nil || preparation == nil || preparation.Err() != context.Canceled {
 		t.Fatalf("preparation timer was not cancelled after return: %v", rerr)
 	}
@@ -141,7 +141,7 @@ func TestExpiredPreparationStillAcknowledgesHealthyOwner(t *testing.T) {
 		return res, nil
 	})
 	res, rerr := s.toolWrite(context.Background(), mustJSON(map[string]any{
-		"title": "Independent acknowledgement deadline", "related": []string{"fixture"},
+		"title": "Independent acknowledgement deadline", "summary": "Publication deadline fixture.", "sections": fixtureSections("note"),
 	}), "")
 	if rerr != nil {
 		t.Fatalf("durable publication failed: %v", rerr)

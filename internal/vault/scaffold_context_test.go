@@ -25,7 +25,7 @@ func TestCreateNoteContextCancellationStopsIDScanBeforePublication(t *testing.T)
 		_, err := createNoteContext(
 			ctx,
 			root,
-			NewNoteSpec{Type: TypeGotcha, Title: "cancelled scan"},
+			completeFixtureSpec(NewNoteSpec{Type: TypeGotcha, Title: "cancelled scan"}),
 			func(ctx context.Context, _ string) (map[string]string, error) {
 				close(started)
 				<-ctx.Done()
@@ -72,7 +72,7 @@ func TestCreateNoteContextCancellationAfterExclusiveOpenCompletesThenCleans(t *t
 	res, err := createNoteContext(
 		ctx,
 		root,
-		NewNoteSpec{Type: TypeGotcha, Title: "finish the claimed note", Do: "do", Dont: "don't", Why: "why"},
+		completeFixtureSpec(NewNoteSpec{Type: TypeGotcha, Title: "finish the claimed note", Do: "do", Dont: "don't", Why: "why"}),
 		func(context.Context, string) (map[string]string, error) {
 			return map[string]string{}, nil
 		},
@@ -127,7 +127,7 @@ func TestCreateNoteContextFailedWriteRemovesExclusiveClaim(t *testing.T) {
 	res, err := createNoteContext(
 		ctx,
 		root,
-		NewNoteSpec{Type: TypeGotcha, Title: "clean failed claim"},
+		completeFixtureSpec(NewNoteSpec{Type: TypeGotcha, Title: "clean failed claim"}),
 		func(context.Context, string) (map[string]string, error) {
 			return map[string]string{}, nil
 		},
@@ -299,6 +299,7 @@ func TestCreateNotePostcheckCoversEveryTypeDestination(t *testing.T) {
 	for noteType := range validTypes {
 		want[DirForType(noteType)] = true
 	}
+	want["inbox"] = true
 	got := make(map[string]bool, len(createNoteDirs))
 	for _, dir := range createNoteDirs {
 		if got[dir] {

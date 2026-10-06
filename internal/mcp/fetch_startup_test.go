@@ -165,7 +165,7 @@ func TestOtherToolsStillAwaitGraph(t *testing.T) {
 	// Derive coverage from the real tool catalogue, not a restated list of tools.
 	for _, spec := range ToolSpecs() {
 		name, _ := spec["name"].(string)
-		if name == "mesh_fetch" || name == "mesh_fetch_many" {
+		if name == "mesh_fetch" || name == "mesh_fetch_many" || name == "mesh_templates" || name == "mesh_note_template" || name == "mesh_block_template" {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {

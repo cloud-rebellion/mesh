@@ -16,7 +16,7 @@ try {
   page.on("pageerror", e => errors.push(e.message));
   let cards = [
     { NoteID: "old", Title: "Historical procedure", Path: "notes/old.md", Tier0: true,
-      SupersededBy: "replacement", MissingGuidance: ["do", "why"], Score: 0.9 },
+      SupersededBy: "replacement", MissingGuidance: ["verification", "limitations"], Score: 0.9 },
     { NoteID: "ordinary", Title: "Ordinary note", Path: "notes/ordinary.md", Score: 0.8 },
   ];
   let revoked = false;
@@ -67,7 +67,7 @@ try {
   await run();
   assert.deepEqual(await page.locator(".rcard").evaluateAll(nodes => nodes.map(n => n.dataset.id)), ["old", "ordinary"], "preserve rank and historical cards");
   assert.match(await page.locator('[data-id="old"].rcard').innerText(), /Superseded/);
-  assert.match(await page.locator('[data-id="old"].rcard').innerText(), /Incomplete guidance: missing do, why/);
+  assert.match(await page.locator('[data-id="old"].rcard').innerText(), /Incomplete authored content: missing verification, limitations/);
   assert.doesNotMatch(await page.locator('[data-id="ordinary"].rcard').innerText(), /Superseded/);
   assert.equal(await page.locator(".rcard button, .rcard a").count(), 0, "no nested interactive elements");
   assert.equal(await page.getByRole("button", { name: "Read replacement", exact: true }).count(), 1);
@@ -76,26 +76,26 @@ try {
   await page.locator('[data-id="old"].rcard').click();
   await page.locator(".note-body").waitFor();
   assert.match(await page.locator(".note-pane").innerText(), /Superseded/);
-  assert.match(await page.locator(".note-pane").innerText(), /Incomplete guidance/);
+  assert.match(await page.locator(".note-pane").innerText(), /Incomplete authored content/);
   assert.match(await page.locator(".note-pane").innerText(), /status is from the last search/);
   assert.equal(calls.at(-1), "/api/note/old", "historical body remains accessible");
   await page.getByRole("button", { name: "Read replacement", exact: true }).focus();
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector(".note-path")?.textContent === "notes/replacement.md");
-  assert.doesNotMatch(await page.locator(".note-pane").innerText(), /Superseded|Incomplete guidance/, "do not transfer the old note's warnings to another note");
+  assert.doesNotMatch(await page.locator(".note-pane").innerText(), /Superseded|Incomplete authored content/, "do not transfer the old note's warnings to another note");
   assert.match(await page.locator(".note-pane").innerText(), /Guidance status not checked/);
   assert.equal(calls.at(-1), "/api/note/replacement");
 
   // If the replacement is itself superseded, use its own result metadata, not
   // the historical card's. Refresh is explicit rather than an automatic query.
-  cards.push({ NoteID: "replacement", Title: "Replacement procedure", SupersededBy: "latest", MissingGuidance: ["dont"] });
+  cards.push({ NoteID: "replacement", Title: "Replacement procedure", SupersededBy: "latest", MissingGuidance: ["evidence"] });
   await page.getByRole("button", { name: "Search this note", exact: true }).click();
   await page.locator(".rcard").first().waitFor();
   assert.equal(calls.at(-1), "/api/search?q=replacement&limit=15");
   await page.locator('.rc-replacement[data-id="replacement"]').click();
   await page.locator(".note-body").waitFor();
-  assert.match(await page.locator(".note-pane").innerText(), /Incomplete guidance: missing dont;/);
-  assert.doesNotMatch(await page.locator(".note-pane").innerText(), /missing do, why/);
+  assert.match(await page.locator(".note-pane").innerText(), /Incomplete authored content: missing evidence;/);
+  assert.doesNotMatch(await page.locator(".note-pane").innerText(), /missing verification, limitations/);
   assert.equal(await page.locator(".note-pane .rc-replacement").getAttribute("data-id"), "latest");
   cards.pop();
 
@@ -110,7 +110,7 @@ try {
 
   // Hidden/missing pointers arrive without SupersededBy. The UI must not infer
   // their existence from prose or invent a replacement request.
-  cards = [{ NoteID: "ordinary", Title: "SupersededBy: classified is just prose", MissingGuidance: ["why"] }];
+  cards = [{ NoteID: "ordinary", Title: "SupersededBy: classified is just prose", MissingGuidance: ["limitations"] }];
   await run();
   assert.equal(await page.locator(".rc-replacement, .rc-superseded").count(), 0);
 
@@ -172,7 +172,7 @@ try {
   await page.locator(".rcard").waitFor();
   assert.deepEqual(errors, []);
   if (process.env.MESH_BROWSER_SCREENSHOT) await page.screenshot({ path: process.env.MESH_BROWSER_SCREENSHOT, fullPage: true });
-  console.log(JSON.stringify({ passed: true, rendered_browser: true, fixture_http_only: true, live_deployment_tested: false, requests: calls.length, checks: ["historical warning", "preserved rank and guidance", "no eager fetch", "keyboard replacement navigation", "replacement status unknown or own warnings", "explicit status refresh", "opaque denied replacement and recovery", "absent pointer", "escaped IDs", "stale success and failure", "empty-query invalidation", "web debounce and IDE submit", "mobile layout"] }));
+  console.log(JSON.stringify({ passed: true, rendered_browser: true, fixture_http_only: true, live_deployment_tested: false, requests: calls.length, checks: ["historical warning", "preserved rank and authored-content warnings", "no eager fetch", "keyboard replacement navigation", "replacement status unknown or own warnings", "explicit status refresh", "opaque denied replacement and recovery", "absent pointer", "escaped IDs", "stale success and failure", "empty-query invalidation", "web debounce and IDE submit", "mobile layout"] }));
 } finally {
   await browser.close();
 }

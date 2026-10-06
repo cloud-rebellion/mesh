@@ -144,13 +144,7 @@ func (m *Migration) File(path string, dryRun bool) (*MigrateResult, error) {
 		}
 	}
 
-	if fm.Type.RequiresFlywheel() {
-		for _, e := range fm.Validate() {
-			if strings.HasPrefix(e, "do ") || strings.HasPrefix(e, "dont ") || strings.HasPrefix(e, "why ") {
-				res.Issues = append(res.Issues, e)
-			}
-		}
-	}
+	res.Issues = append(res.Issues, ReadLegacy(fm).Missing()...)
 
 	if len(add.Content) == 0 {
 		return res, nil // already clean: idempotent no-op
@@ -426,73 +420,11 @@ func encodeFrontmatter(m *yaml.Node) (string, error) {
 	return strings.TrimRight(b.String(), "\n"), nil
 }
 
-// BackfillBodyFile repairs a note whose body is still the TODO skeleton an older Mesh
-// scaffolded (the fixed bodyTemplate text, byte-for-byte) while its do/dont/why content
-// already sits in frontmatter, unread by anyone looking at the body. It reuses
-// bodySections, the SAME type-to-heading mapping renderBody uses for brand-new notes (see
-// scaffold.go), so a repaired note converges on exactly the body CreateNote would have
-// written today instead of drifting into a second, hand-maintained mapping.
-//
-// Two mappings feed it. bodySections covers decision/gotcha/post-mortem, whose do/dont/why
-// come from the author. referenceSections covers entity and note, where a HUMAN scaffold
-// has no such fields but an AGENT write (mesh_write_entity, mesh_append_note) does: those
-// pages were a silent no-op here until 2026-08-10, so 18 of them in the live vault kept a
-// pure TODO skeleton with their whole substance sitting in frontmatter. Within either
-// mapping, a section is only
-// touched when its body content is STILL the placeholder comment verbatim AND the mapped
-// frontmatter field has real content (Unfilled decides "real" the same way lint and the
-// scaffold do). An author who already replaced a placeholder with their own prose keeps it
-// exactly as written, even if it disagrees with the frontmatter field: this backfill fills
-// gaps, it never overwrites judgment. post-mortem's "What happened" has no mapped field
-// (bodySections leaves it nil) and is never touched, on purpose, matching renderBody.
-//
-// Idempotent: once a section holds real content it no longer matches its placeholder
-// verbatim, so a second run finds nothing left to do.
+// BackfillBodyFile is a retired compatibility entry point. Copying shorthand into
+// semantic headings can turn a recommendation into an unsupported cause or impact.
+// Conversion now requires a purpose-specific candidate and an exact reviewed preview.
 func BackfillBodyFile(path string, dryRun bool) (*MigrateResult, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	fmText, body, had := SplitFrontmatter(string(data))
-	if !had {
-		return nil, noFrontmatterErr(path, string(data))
-	}
-	fm, _, err := ParseFrontmatter([]byte(fmText))
-	if err != nil {
-		return nil, err
-	}
-	res := &MigrateResult{Path: path}
-	sections := bodySections(fm.Type)
-	if sections == nil {
-		// Not a flywheel type. A reference page (entity, note) is not fed by do/dont/why
-		// when a HUMAN scaffolds it, but an agent writing one through mesh_write_entity /
-		// mesh_append_note does supply that prose, and it landed in frontmatter with the
-		// body left as a pure TODO skeleton on 18 pages in the live vault.
-		sections = referenceSections(fm.Type)
-	}
-	if sections == nil {
-		return res, nil // nothing in frontmatter maps to this type's body
-	}
-
-	newBody, filled := fillBodySections(body, fm, sections)
-	if fm.Type == TypeEntity {
-		var extra []string
-		newBody, extra = repairEntityPage(newBody, fm)
-		filled = append(filled, extra...)
-	}
-	if len(filled) == 0 {
-		return res, nil // idempotent no-op
-	}
-	res.Changed = true
-	res.Actions = append(res.Actions, "filled body section(s): "+strings.Join(filled, ", "))
-	if dryRun {
-		return res, nil
-	}
-	out := "---\n" + fmText + "\n---\n" + newBody
-	if err := writeNoteChecked(path, matchEOL(out, string(data))); err != nil {
-		return nil, err
-	}
-	return res, nil
+	return &MigrateResult{Path: path}, fmt.Errorf("%w: automatic body backfill is retired; use mesh templates migration-preview and review the reconstructed content", ErrInvalidSpec)
 }
 
 // fillBodySections projects each section's mapped frontmatter field into the body, and
@@ -717,12 +649,12 @@ func repairEntityPage(body string, fm *Frontmatter) (string, []string) {
 	// Both repairs are for a page that HAS content: an agent wrote it, its substance is in
 	// why, and nothing will ever revisit it. A page with no why is a fresh `mesh new`
 	// scaffold a human is about to fill, and every prompt on it is still doing its job.
-	if Unfilled(strings.TrimSpace(fm.Why)) {
+	if Unfilled(strings.TrimSpace(ReadLegacy(fm).Why)) {
 		return body, nil
 	}
 	var did []string
 	if strings.Contains(body, entityLeadPlaceholder) {
-		if lead := FirstSentence(fm.Why); lead != "" {
+		if lead := FirstSentence(ReadLegacy(fm).Why); lead != "" {
 			body = strings.Replace(body, entityLeadPlaceholder, "**One-liner.** "+lead, 1)
 			did = append(did, "One-liner (from why)")
 		}

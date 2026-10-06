@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/bright-interaction/mesh/internal/vault"
 )
 
 // This file is the INSTRUCTION BOUNDARY for the LLM sink.
@@ -118,31 +120,18 @@ func stripEnvelopeTags(text string) string {
 	return envelopePrefix.ReplaceAllString(text, `(${1}untrusted-external-content`)
 }
 
-// frontmatterProvenance pulls source + source_url out of a note's leading YAML
-// frontmatter without a full parse. The fetch path already holds the bytes and needs
-// exactly two scalar keys, so a scan of the frontmatter block is cheaper (and cannot
-// fail) compared to unmarshalling the whole document.
+// frontmatterProvenance reads current YAML using the same parser as the index.
+// Folded scalars and quoted escapes must retain import provenance after a note
+// moves outside imported/. Invalid or absent metadata leaves the path fallback
+// authoritative; access checks remain independent of this provenance cue.
 func frontmatterProvenance(body string) (source, sourceURL string) {
-	rest, ok := strings.CutPrefix(body, "---\n")
-	if !ok {
+	header, _, had := vault.SplitFrontmatter(body)
+	if !had {
 		return "", ""
 	}
-	block, _, ok := strings.Cut(rest, "\n---")
-	if !ok {
+	fm, _, err := vault.ParseFrontmatter([]byte(header))
+	if err != nil {
 		return "", ""
 	}
-	for _, ln := range strings.Split(block, "\n") {
-		key, val, found := strings.Cut(ln, ":")
-		if !found {
-			continue
-		}
-		v := strings.Trim(strings.TrimSpace(val), `"'`)
-		switch strings.TrimSpace(key) {
-		case "source":
-			source = v
-		case "source_url":
-			sourceURL = v
-		}
-	}
-	return source, sourceURL
+	return fm.Source, fm.SourceURL
 }

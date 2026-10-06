@@ -20,8 +20,9 @@ and the opt-in workspace catch-up timer for server-side merges.
   - **Rerank** lifts top-1 precision for a consumer that *trusts the top result without reading the cards*. Use either a local/cloud cross-encoder, or let an already-authenticated Codex/Claude subscription rank 12 compact cards with its cheapest suitable model and return only the best 5. The subscription path needs no API key and no Ollama; it never scans the vault or receives full note bodies. See `docs/BENCHMARK.md` for the measured cross-encoder arm.
 - **Also shipped:** a keyboard TUI (`mesh tui`) and a browser app (`mesh ui`) over the same index, plus the client side of sovereign team sync (`mesh join` / `mesh sync` / `mesh conflicts`). The team-sync **server** those talk to is the commercial product and is not in this repository, see [LICENSING.md](LICENSING.md). All optional; the solo, local core stands alone.
 
-Search cards flag unfilled `do`/`dont`/`why` fields on decisions, gotchas and
-post-mortems as `MissingGuidance`. The warning survives compact token packing;
+Search cards flag missing substantive sections from each versioned template as
+`MissingGuidance`. Historical explicit placeholders remain visible; absent retired
+fields are not completeness failures. The warning survives compact token packing;
 CLI, TUI and web search mark the result as incomplete. Tier-0 describes the note
 type, not verified truth. A populated note is not automatically current or correct:
 fetch its evidence and check supersession before relying on it.
@@ -109,8 +110,9 @@ Now your own vault:
 
 ```
 mesh init my-vault                 # bootstrap a vault (starter index + first build)
-mesh new decision "Use Postgres over Mongo" \
-  --do "..." --dont "..." --why "..." --vault my-vault   # capture judgment; Mesh fills id/date/placement
+mesh templates decision          # fetch fixed sections and content guidance
+mesh new decision "Use Postgres over Mongo" --vault my-vault
+                                  # incomplete material stays in the draft inbox
 mesh index my-vault                # rebuild the index after edits
 mesh search "Postgres" --vault my-vault --budget 4000
 mesh watch my-vault                # live-reindex as you edit (no manual index; Ctrl-C to stop)
@@ -355,7 +357,7 @@ Mesh speaks MCP (JSON-RPC) over stdio. Point your agent at:
 { "command": "mesh", "args": ["mcp", "--vault", "/abs/path/to/my-vault", "--watch"] }
 ```
 
-The agent then gets: `mesh_search` (fused, budget-aware), `mesh_fetch` (a note or one heading by anchor), `mesh_god_nodes` (the hub map to orient), `mesh_changed_since` (deltas on resume), and the write-back tools `mesh_append_note` / `mesh_write_entity`. `mesh_append_note` also accepts `type: map`; an overview in `why` plus `related` entry points renders as a readable front-door page rather than an empty scaffold. The retrieval contract (how to query cheaply, and to write back when done) is served as the MCP `initialize` instructions and the `mesh://contract` resource, so any agent uses it well without extra prompting.
+The agent then gets: `mesh_search` (fused, budget-aware), `mesh_fetch` (a note or one heading by anchor), `mesh_god_nodes` (the hub map to orient), `mesh_changed_since` (deltas on resume), and the write-back tools `mesh_append_note` / `mesh_write_entity`. `mesh_templates` exposes the approved library; `mesh_note_template` and `mesh_block_template` fetch individual definitions. `mesh_author_note` prepares, validates, drafts and publishes through the shared authoring system. The `index` template creates collection entry points; ordinary notes using registered templates need no approval. See [the authoring guide](docs/AUTHORING.md) for templates, Markdown tables/lists, drafts and reviewed migration. The retrieval contract (how to query cheaply, and to write back when done) is served as the MCP `initialize` instructions and the `mesh://contract` resource, so any agent uses it well without extra prompting.
 
 ### Bounded batch fetches and worker settings
 
@@ -836,7 +838,7 @@ Set up and capture:
 | `mesh install --rerank-agent codex\|claude` | Install and explicitly opt the local MCP server into the pinned small subscription model; no API key or setup inference call |
 | `mesh install --remove` | The inverse: drop the mesh entry from that client's config (and the session hooks on Claude Code). Run it before deleting the binary |
 | `mesh init [path]` | Bootstrap a new vault |
-| `mesh new <type> "<title>"` | Scaffold a note (id, date, placement, skeleton auto-filled) |
+| `mesh new <template> "<title>"` | Create a complete note or an incomplete draft with automatic identity, timestamps and fixed headings |
 | `mesh migrate [vault]` | Bring a Foam / Obsidian-style vault up to the Mesh schema (dry run unless `--apply`) |
 | `mesh ingest <source>` | Pull external knowledge (GitHub, Slack, Linear, Jira, Notion) into the vault, incrementally |
 | `mesh extract <transcript>` | Turn an agent session transcript into candidate write-back notes to keep or discard |

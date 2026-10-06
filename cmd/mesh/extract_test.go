@@ -37,12 +37,12 @@ func TestKnownInVaultDedup(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	dup := extract.Candidate{Type: "gotcha", Title: "SSRF denylists must include 100.64.0.0/10 for Tailscale", Do: "add the CGNAT range"}
+	dup := extract.Candidate{Template: "troubleshooting", TemplateVersion: 1, Type: "gotcha", Title: "SSRF denylists must include 100.64.0.0/10 for Tailscale", Summary: "add the CGNAT range"}
 	if known, of := knownInVault(ctx, rtr, dup); !known {
 		t.Errorf("restatement not detected as known (matched %q)", of)
 	}
 
-	fresh := extract.Candidate{Type: "decision", Title: "Mollie webhooks require re-fetch, not signature verification", Do: "re-fetch the payment by id"}
+	fresh := extract.Candidate{Template: "decision", TemplateVersion: 1, Type: "decision", Title: "Mollie webhooks require re-fetch, not signature verification", Summary: "re-fetch the payment by id"}
 	if known, of := knownInVault(ctx, rtr, fresh); known {
 		t.Errorf("a genuinely new candidate was wrongly deduped (matched %q)", of)
 	}
@@ -70,9 +70,9 @@ func TestWriteToPendingQualityGate(t *testing.T) {
 	})
 
 	cands := []extract.Candidate{
-		{Type: "gotcha", Title: "KEEP a durable rule with a real mechanism", Do: "do x", Confidence: "high"},
-		{Type: "gotcha", Title: "REJECT a weak one-off with no mechanism", Do: "do y", Confidence: "high"},
-		{Type: "decision", Title: "a low-confidence guess dropped before judging", Do: "do z", Confidence: "low"},
+		{Template: "troubleshooting", TemplateVersion: 1, Type: "gotcha", Title: "KEEP a durable rule with a real mechanism", Summary: "do x", Confidence: "high"},
+		{Template: "troubleshooting", TemplateVersion: 1, Type: "gotcha", Title: "REJECT a weak one-off with no mechanism", Summary: "do y", Confidence: "high"},
+		{Template: "decision", TemplateVersion: 1, Type: "decision", Title: "a low-confidence guess dropped before judging", Summary: "do z", Confidence: "low"},
 	}
 	if err := writeToPending(dir, "session.jsonl", cands, []llm.Client{judge}); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestWriteToPendingRoutesThroughLiveMCPOwner(t *testing.T) {
 	}
 	t.Cleanup(func() { afterPendingOpEnqueue = nil })
 
-	cand := extract.Candidate{Type: "gotcha", Title: "Stop hook survives a live MCP owner", Do: "queue through the owner", Confidence: "high"}
+	cand := extract.Candidate{Template: "troubleshooting", TemplateVersion: 1, Type: "gotcha", Title: "Stop hook survives a live MCP owner", Summary: "queue through the owner", Confidence: "high"}
 	if err := writeToPending(dir, "session.jsonl", []extract.Candidate{cand}, nil); err != nil {
 		t.Fatalf("automatic extraction failed beside its normal live MCP owner: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestWriteToPendingRoutesThroughLiveMCPOwner(t *testing.T) {
 	}
 	defer reader.Close()
 	got, err := reader.GetPending(index.PendingID(cand.Type, cand.Title))
-	if err != nil || got.Do != cand.Do {
+	if err != nil || got.Summary != cand.Summary {
 		t.Fatalf("MCP owner did not persist queued extraction: got=%+v err=%v", got, err)
 	}
 }
@@ -200,7 +200,7 @@ func TestVarianceStats(t *testing.T) {
 
 func TestNearDuplicatePending(t *testing.T) {
 	existing := []index.PendingNote{
-		{Type: "gotcha", Title: "Verify new credential works BEFORE invalidating the old one"},
+		{Template: "troubleshooting", TemplateVersion: 1, Type: "gotcha", Title: "Verify new credential works BEFORE invalidating the old one"},
 	}
 	if of, dup := nearDuplicatePending("Verify new credentials work BEFORE retiring old ones", existing); !dup {
 		t.Errorf("a reworded restatement of a queued item should be caught (matched %q)", of)
@@ -220,14 +220,14 @@ func TestWriteToPendingSuppressesQueuedDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddPending(index.PendingNote{Type: "gotcha", Title: "Verify new credential works BEFORE invalidating the old one", Do: "probe first"}); err != nil {
+	if err := store.AddPending(index.PendingNote{Template: "troubleshooting", TemplateVersion: 1, Type: "gotcha", Title: "Verify new credential works BEFORE invalidating the old one", Summary: "probe first"}); err != nil {
 		t.Fatal(err)
 	}
 	store.Close() // writeToPending opens its own handle
 
 	cands := []extract.Candidate{
-		{Type: "gotcha", Title: "Verify new credentials work BEFORE retiring old ones", Do: "probe first"}, // reworded duplicate
-		{Type: "decision", Title: "Bun is the only package manager allowed", Do: "use bun"},                // genuinely new
+		{Template: "troubleshooting", TemplateVersion: 1, Type: "gotcha", Title: "Verify new credentials work BEFORE retiring old ones", Summary: "probe first"}, // reworded duplicate
+		{Template: "decision", TemplateVersion: 1, Type: "decision", Title: "Bun is the only package manager allowed", Summary: "use bun"},                       // genuinely new
 	}
 	if err := writeToPending(dir, "session.jsonl", cands, nil); err != nil { // nil judge: exercise dedup only
 		t.Fatal(err)

@@ -119,20 +119,13 @@ func structureCmd() *cobra.Command {
 	c.Flags().BoolVar(&verbose, "verbose", false, "list every finding with its note path")
 	c.Flags().BoolVar(&wireOrphans, "wire-orphans", false, "propose `related:` links for every orphan note (dry run unless --apply)")
 	c.Flags().BoolVar(&allowUncorroboratedTop, "allow-uncorroborated-top", false, "with --wire-orphans, accept the top retrieval hit without a shared tag (unsafe for bulk apply)")
-	c.Flags().BoolVar(&fillBodies, "fill-bodies", false, "fill a note's TODO-skeleton body sections from its already-authored do/dont/why (dry run unless --apply)")
+	c.Flags().BoolVar(&fillBodies, "fill-bodies", false, "retired: use reviewed mesh templates migration-preview instead")
 	c.Flags().BoolVar(&fillTimelines, "fill-timelines", false, "build a post-mortem's \"What happened\" from its own dates and the commit ids it names (dry run unless --apply)")
 	c.Flags().StringVar(&repoPath, "repo", "", "with --fill-timelines, a git repository to resolve commit ids against, so the timeline carries real committer times and subjects")
 	c.Flags().BoolVar(&apply, "apply", false, "with --wire-orphans or --fill-bodies, write the changes into the notes")
 	return c
 }
 
-// fillNoteBodies repairs every note whose body is still the TODO skeleton scaffolded by an
-// older Mesh while its do/dont/why already sit in frontmatter (see vault.BackfillBodyFile).
-// It is a dry run unless --apply, matching wireOrphanNotes: this rewrites the author's
-// files, so the default has to be "show me".
-//
-// BackfillBodyFile is idempotent (a filled section no longer matches its placeholder), so
-// running this twice is safe and the second run reports nothing to do.
 // fillNoteTimelines builds the "What happened" section of every post-mortem still holding
 // its placeholder, from the note's own recorded date, the commit ids it names, and the
 // dates in its prose (see vault.BackfillTimelineFile). Dry run unless --apply, like its
@@ -234,51 +227,7 @@ func gitCommitResolver(repoPath string) (vault.CommitResolver, error) {
 }
 
 func fillNoteBodies(root string, files []string, apply bool) error {
-	if !apply {
-		fmt.Println("dry run (pass --apply to write); scanning for TODO-skeleton bodies with filled frontmatter")
-	}
-	// failed, not "skipped". This counter was named skipped but only ever incremented
-	// on an error, and the function returned nil regardless, so a run that failed on
-	// every note printed the failures and exited 0 and every script wrapping it read a
-	// no-op as success. `mesh migrate` and `mesh scope backfill` were fixed to exit
-	// non-zero on the same shape; this one is their twin and was left behind.
-	var changed, failed int
-	for _, path := range files {
-		rel := path
-		if r, err := filepath.Rel(root, path); err == nil {
-			rel = r
-		}
-		res, err := vault.BackfillBodyFile(path, !apply)
-		if err != nil {
-			fmt.Printf("  !! %s: %v\n", rel, err)
-			failed++
-			continue
-		}
-		if !res.Changed {
-			continue
-		}
-		changed++
-		fmt.Printf("  %s\n", rel)
-		for _, a := range res.Actions {
-			fmt.Printf("      %s\n", a)
-		}
-	}
-	verb := "would fill"
-	if apply {
-		verb = "filled"
-	}
-	fmt.Printf("\n%s %d note body(ies)", verb, changed)
-	if failed > 0 {
-		fmt.Printf(", failed on %d", failed)
-	}
-	fmt.Println()
-	if apply && changed > 0 {
-		fmt.Printf("run `mesh index %s` to pick the new bodies up\n", shellpath.Quote(root))
-	}
-	if failed > 0 {
-		return fmt.Errorf("%d of %d note(s) failed to fill", failed, len(files))
-	}
-	return nil
+	return fmt.Errorf("automatic body backfill is retired; use mesh templates migration-preview and review the reconstructed content")
 }
 
 // wireOrphanNotes gives every orphan note a `related:` list derived from Mesh's own

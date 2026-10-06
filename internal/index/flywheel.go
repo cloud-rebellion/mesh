@@ -35,9 +35,11 @@ func (s *Store) RecordWritebackContext(ctx context.Context, noteID, source strin
 	now := time.Now().Unix()
 	return s.WriteContext(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO note_reuse(note_id, authored_at, source) VALUES(?,?,?)
+			`INSERT INTO note_reuse(note_id, authored_at, source) SELECT ?,?,?
+			 WHERE NOT EXISTS (SELECT 1 FROM notes n WHERE n.id=? AND
+			 CASE WHEN json_valid(n.frontmatter) THEN lower(trim(COALESCE(json_extract(n.frontmatter, '$.Status'), ''))) ELSE '' END = 'draft')
 			 ON CONFLICT(note_id) DO NOTHING`,
-			noteID, now, source)
+			noteID, now, source, noteID)
 		return err
 	})
 }
@@ -58,7 +60,7 @@ func (s *Store) BackfillWritebacksContext(ctx context.Context) (int, error) {
 	err := s.WriteContext(ctx, func(tx *sql.Tx) error {
 		res, e := tx.ExecContext(ctx,
 			`INSERT INTO note_reuse(note_id, authored_at, source)
-			   SELECT id, mtime, source FROM notes WHERE source = 'agent'
+			   SELECT n.id, n.mtime, n.source FROM notes n WHERE n.source = 'agent'`+draftPredicate+`
 			 ON CONFLICT(note_id) DO NOTHING`)
 		if e != nil {
 			return e
@@ -94,7 +96,7 @@ func (s *Store) IsAgentAuthoredNote(noteID string) bool {
 		return false
 	}
 	var source string
-	return s.readDB.QueryRow(`SELECT COALESCE(source,'') FROM notes WHERE id=?`, noteID).Scan(&source) == nil && source == "agent"
+	return s.readDB.QueryRow(`SELECT COALESCE(n.source,'') FROM notes n WHERE n.id=?`+draftPredicate, noteID).Scan(&source) == nil && source == "agent"
 }
 
 // ReusedNote is one note and how many later-session fetches it has drawn, for the

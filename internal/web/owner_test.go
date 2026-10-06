@@ -216,7 +216,7 @@ func TestReadOnlyWritesRouteThroughTheOwner(t *testing.T) {
 	dir := t.TempDir()
 	writeNote(t, dir, "n.md", "---\nid: n\ntype: note\nwhen: 2026-01-01\n---\n# N\nbody\n")
 	seedIndex(t, dir)
-	seedPending(t, dir, index.PendingNote{Type: "gotcha", Title: "Route me", Do: "x", Dont: "y", Why: "z"})
+	seedPending(t, dir, completePending("Route me"))
 	runOwner(t, dir)
 
 	s, err := NewServer(dir)

@@ -83,6 +83,26 @@ func cardTokensNoMarshal(c Card) int {
 			n += estimateTokens(string(b))
 		}
 	}
+	// Optional reader metadata must be charged even on this defensive path.
+	for key, value := range map[string]any{
+		"State": c.State, "Summary": c.Summary, "Template": c.Template,
+		"Updated": c.Updated, "VerifiedAt": c.VerifiedAt,
+		"Source": c.Source, "SourceURL": c.SourceURL,
+	} {
+		if value == "" {
+			continue
+		}
+		b, _ := json.Marshal(value)
+		n += estimateTokens(`,"`+key+`":`) + estimateTokens(string(b))
+	}
+	if c.TemplateVersion != 0 {
+		b, _ := json.Marshal(c.TemplateVersion)
+		n += estimateTokens(`,"TemplateVersion":`) + estimateTokens(string(b))
+	}
+	if len(c.Sections) > 0 {
+		b, _ := json.Marshal(c.Sections)
+		n += estimateTokens(`,"Sections":`) + estimateTokens(string(b))
+	}
 	return n
 }
 
@@ -215,6 +235,7 @@ func tier0Reserve(cards []Card, budget int, cost CardCost) int {
 // fall back to when the full form will not fit.
 func compact(c Card) Card {
 	c.Snippet = ""
+	c.Summary = ""
 	return c
 }
 

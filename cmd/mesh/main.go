@@ -65,7 +65,7 @@ func rootCmd() *cobra.Command {
 		versionCmd(),
 		upgradeCmd(),
 		initCmd(),
-		newCmd(),
+		newCmd(), templatesCmd(), draftsCmd(),
 		indexCmd(),
 		codeCmd(),
 		embedCmd(),
@@ -1365,47 +1365,142 @@ func economicsCmd() *cobra.Command {
 }
 
 func newCmd() *cobra.Command {
-	var vaultDir, do, dont, why, related, tags, status, severity, by string
+	var vaultDir, summary, related, tags, collections, supersedes, status, severity, by, sectionsFile, blocksFile, draftID, draftRevision, verifiedAt string
+	var sectionValues []string
+	var version int
 	c := &cobra.Command{
-		Use:   "new <type> <title...>",
-		Short: "Scaffold a note with auto-filled id, timestamp, placement, and skeleton",
-		Long:  "Create a note where Mesh fills everything derivable (id, when, created, placement, filename, skeleton) so the author only supplies judgment: type, title, and the do/dont/why one-liners.",
+		Use:   "new <template> <title...>",
+		Short: "Author a purpose-specific note, or save an incomplete draft in inbox",
+		Long:  "Choose a template with mesh templates. Supply a factual summary and authored sections. Drafts remain in inbox; publication requires all required content. Mesh derives identity, timestamps and placement.",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			res, err := vault.CreateNote(vaultDir, vault.NewNoteSpec{
-				Type:     vault.NoteType(args[0]),
-				Title:    strings.Join(args[1:], " "),
-				Do:       do,
-				Dont:     dont,
-				Why:      why,
-				Related:  splitCSV(related),
-				Tags:     splitCSV(tags),
-				Status:   status,
-				Severity: severity,
-				By:       by,
-			})
+			sections := map[string]string{}
+			if sectionsFile != "" {
+				if err := readAuthoringJSON(sectionsFile, &sections); err != nil {
+					return err
+				}
+			}
+			for _, value := range sectionValues {
+				key, content, ok := strings.Cut(value, "=")
+				if !ok || strings.TrimSpace(key) == "" {
+					return fmt.Errorf("section must be key=authored prose")
+				}
+				key = strings.TrimSpace(key)
+				if _, exists := sections[key]; exists {
+					return fmt.Errorf("section %q supplied more than once", key)
+				}
+				sections[key] = content
+			}
+			var blocks []vault.BlockSpec
+			if blocksFile != "" {
+				if err := readAuthoringJSON(blocksFile, &blocks); err != nil {
+					return err
+				}
+			}
+			spec := vault.NewNoteSpec{
+				Template: args[0], TemplateVersion: version, Title: strings.Join(args[1:], " "),
+				Summary: summary, Sections: sections, Blocks: blocks, Related: splitCSV(related),
+				Tags: splitCSV(tags), Collections: splitCSV(collections), Supersedes: splitCSV(supersedes),
+				Status: status, Severity: severity, By: by, DraftID: draftID, DraftRevision: draftRevision, VerifiedAt: verifiedAt,
+			}
+			if !cmd.Flags().Changed("status") {
+				normalized, err := vault.NormalizeSpec(spec)
+				if err != nil {
+					return err
+				}
+				spec = normalized
+				spec.Status = "active"
+				if len(vault.MissingContent(spec)) > 0 {
+					spec.Status = "draft"
+				}
+			}
+			if err := validateLocalAuthoringReferences(cmd.Context(), vaultDir, spec); err != nil {
+				return err
+			}
+			res, err := vault.CreateNoteContext(cmd.Context(), vaultDir, spec)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("created %s\n", res.Path)
-			fmt.Printf("  id: %s   when: %s\n", res.ID, res.When)
+			fmt.Printf("saved %s\n  id: %s   when: %s\n  revision: %s\n", res.Path, res.ID, res.When, res.Revision)
 			if len(res.TODOs) > 0 {
-				fmt.Printf("  fill: %s\n", strings.Join(res.TODOs, "; "))
-			} else {
-				fmt.Println("  lint: clean")
+				fmt.Printf("draft needs: %s\n", strings.Join(res.TODOs, "; "))
 			}
 			return nil
 		},
 	}
 	c.Flags().StringVar(&vaultDir, "vault", ".", "vault root")
-	c.Flags().StringVar(&do, "do", "", "flywheel: what to do next time")
-	c.Flags().StringVar(&dont, "dont", "", "flywheel: what to avoid and the failure it caused")
-	c.Flags().StringVar(&why, "why", "", "flywheel: the reason or root cause")
-	c.Flags().StringVar(&related, "related", "", "comma-separated [[basename]] links")
-	c.Flags().StringVar(&tags, "tags", "", "comma-separated tags")
-	c.Flags().StringVar(&status, "status", "", "status (decision/post-mortem)")
-	c.Flags().StringVar(&severity, "severity", "", "severity (post-mortem)")
+	c.Flags().IntVar(&version, "template-version", 1, "exact template version")
+	c.Flags().StringVar(&summary, "summary", "", "factual summary of the note")
+	c.Flags().StringVar(&draftID, "draft-id", "", "existing draft ID to revise or publish")
+	c.Flags().StringVar(&draftRevision, "draft-revision", "", "exact current draft revision")
+	c.Flags().StringVar(&verifiedAt, "verified-at", "", "date or timestamp supported by a verification block")
+	c.Flags().StringArrayVar(&sectionValues, "section", nil, "authored section key=prose (repeat for each section)")
+	c.Flags().StringVar(&sectionsFile, "sections-file", "", "JSON object of section keys and authored prose")
+	c.Flags().StringVar(&blocksFile, "blocks-file", "", "JSON array of optional supporting blocks")
+	c.Flags().StringVar(&related, "related", "", "comma-separated verified note IDs")
+	c.Flags().StringVar(&tags, "tags", "", "comma-separated cross-cutting topic tags")
+	c.Flags().StringVar(&collections, "collections", "", "comma-separated collection IDs")
+	c.Flags().StringVar(&supersedes, "supersedes", "", "comma-separated replaced note IDs")
+	c.Flags().StringVar(&status, "status", "", "auto publishes complete notes and saves incomplete drafts; active/draft override")
+	c.Flags().StringVar(&severity, "severity", "", "incident severity")
 	c.Flags().StringVar(&by, "by", "", "author/contributor")
+	return c
+}
+
+// readAuthoringJSON bounds local input before decoding; prose validation stays in
+// the shared vault API rather than creating a separate CLI publication contract.
+func readAuthoringJSON(path string, out any) error {
+	return readAuthoringJSONBounded(path, out, 128<<10)
+}
+
+func readAuthoringJSONBounded(path string, out any, maxBytes int64) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(raw)) > maxBytes {
+		return fmt.Errorf("authoring input exceeds %d bytes", maxBytes)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("authoring input must contain exactly one JSON value")
+	}
+	return nil
+}
+
+func templatesCmd() *cobra.Command {
+	var asJSON bool
+	c := &cobra.Command{Use: "templates [id]", Short: "Show the canonical note and supporting-block templates", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			tmpl, err := vault.TemplateFor(args[0], 1)
+			if err != nil {
+				return err
+			}
+			raw, _ := json.MarshalIndent(tmpl, "", "  ")
+			fmt.Println(string(raw))
+			return nil
+		}
+		if asJSON {
+			raw, _ := json.MarshalIndent(map[string]any{"templates": vault.Templates(), "blocks": vault.BlockTemplates()}, "", "  ")
+			fmt.Println(string(raw))
+			return nil
+		}
+		for _, tmpl := range vault.Templates() {
+			fmt.Printf("%s (v%d): %s\n", tmpl.ID, tmpl.Version, tmpl.Purpose)
+		}
+		return nil
+	}}
+	c.Flags().BoolVar(&asJSON, "json", false, "emit template and block schemas as JSON")
+	c.AddCommand(authoringMigrationPreviewCmd(), authoringMigrationApplyCmd())
 	return c
 }
 
@@ -1844,7 +1939,7 @@ func migrateCmd() *cobra.Command {
 			}
 			fmt.Printf("%s %d of %d files (%d already clean, %d errored)\n", verb, changed, len(files), len(files)-changed-errored, errored)
 			if flywheel > 0 {
-				fmt.Printf("note:   %d flywheel notes still need do/dont/why (author them; never auto-filled)\n", flywheel)
+				fmt.Printf("note:   %d legacy notes need reviewed migration to purpose-specific prose (never auto-filled)\n", flywheel)
 			}
 			// A migrate that failed on 800 of 1150 files used to print the failures and
 			// exit 0, so every script wrapping it read a partial rewrite as success.
@@ -1939,7 +2034,7 @@ Lint reports two different things and does not conflate them:
 
   NOTICES  are work, not damage. A [[link]] to a note nobody has written yet is a
            deliberate marker (see the vault structure standard), and an unfilled
-           do/dont/why on a decision is authoring debt only a human can settle, which
+           required authored section on a note is authoring debt only a human can settle, which
            is why no tool fills them in. Zero exit.
 
 This split exists because the old single count reported ~1100 "problems" for a vault
@@ -1984,11 +2079,21 @@ check that cannot fail meaningfully is worse than no check.`,
 					if e == "missing id" {
 						continue // already reported via BuildGraph
 					}
-					if strings.Contains(e, "not filled") || e == "missing when" {
+					if strings.Contains(e, "not filled") || strings.Contains(e, "contains an unfilled placeholder") || e == "missing when" {
 						noticesList = append(noticesList, item{pn.Path, e})
 						continue
 					}
 					errorsList = append(errorsList, item{pn.Path, e})
+				}
+				if pn.FM.Template != "" || pn.FM.TemplateVersion != 0 {
+					authored, aerr := vault.ReadAuthoring(pn.FM, pn.Body)
+					if aerr != nil {
+						errorsList = append(errorsList, item{pn.Path, "invalid authored structure: " + aerr.Error()})
+					} else {
+						for _, missing := range authored.MissingSections {
+							noticesList = append(noticesList, item{pn.Path, "missing authored content: " + missing})
+						}
+					}
 				}
 				if base := filepath.Base(pn.Path); !isKebab(base) && !isConventionalDoc(base) {
 					noticesList = append(noticesList, item{pn.Path, "filename is not kebab-case"})

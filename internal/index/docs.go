@@ -22,40 +22,69 @@ const maxDocChars = 2000
 // one watcher generation behind the notes/search tables. Anything used for access
 // control or returned to a caller must therefore come from this current snapshot.
 type NoteMetadata struct {
-	NodeID          string
-	NoteID          string
-	Path            string
-	Type            string
-	Title           string
-	Scope           string
-	SupersededBy    string
-	SupersederPath  string
-	SupersederScope string
-	MissingGuidance []string
+	NodeID            string
+	NoteID            string
+	Path              string
+	Type              string
+	Title             string
+	Scope             string
+	SupersededBy      string
+	SupersederPath    string
+	SupersederScope   string
+	SupersederState   string
+	State             string
+	Summary           string
+	Template          string
+	TemplateVersion   int
+	Updated           string
+	VerifiedAt        string
+	Source            string
+	SourceURL         string
+	Sections          []SectionAddress
+	SectionsTruncated bool
+	MissingGuidance   []string
 }
 
-// Only read the three guidance fields, not the complete frontmatter or note body.
-// These values share the identity/ACL snapshot, including on the reranker path.
-const guidanceFieldsSQL = `CASE WHEN json_valid(n.frontmatter)
-  THEN json_extract(n.frontmatter, '$.Do', '$.Dont', '$.Why') ELSE '[]' END`
-
-func missingGuidance(kind, fieldsJSON string) []string {
-	if !vault.NoteType(kind).RequiresFlywheel() {
-		return nil
+// Metadata and template completeness are read in the same identity/ACL snapshot.
+// Indexed section addresses describe the current persisted body, not the separately
+// refreshed ranking graph. A template mismatch is incomplete until reindexed.
+func applyReaderMetadata(m *NoteMetadata, fmJSON, attrsJSON string) {
+	if strings.EqualFold(strings.TrimSpace(m.SupersederState), "draft") {
+		m.SupersededBy, m.SupersederPath, m.SupersederScope, m.SupersederState = "", "", "", ""
 	}
-	var fields [3]string
-	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
-		// Invalid stored guidance is not evidence of a complete note.
-		fields = [3]string{}
+	var fm vault.Frontmatter
+	if err := json.Unmarshal([]byte(fmJSON), &fm); err != nil {
+		fm.Type = vault.NoteType(m.Type)
+		m.MissingGuidance = vault.ReadLegacy(&fm).Missing()
+		return
 	}
-	var missing []string
-	for i, name := range []string{"do", "dont", "why"} {
-		text, _ := vault.StripComments(fields[i])
-		if vault.Unfilled(text) {
-			missing = append(missing, name)
-		}
+	m.State, m.Template, m.TemplateVersion = fm.Status, fm.Template, fm.TemplateVersion
+	if strings.HasPrefix(fm.Source, "import:") {
+		m.Source, m.SourceURL = fm.Source, fm.SourceURL
 	}
-	return missing
+	if summary, _ := vault.StripComments(fm.Summary); !vault.Unfilled(summary) {
+		m.Summary = boundedText(summary, 320)
+	}
+	m.Updated, m.VerifiedAt = fm.Updated, fm.VerifiedAt
+	if m.Updated == "" {
+		m.Updated = fm.When
+	}
+	if fm.Template == "" && fm.TemplateVersion == 0 {
+		m.MissingGuidance = vault.ReadLegacy(&fm).Missing()
+		return
+	}
+	var attrs struct {
+		Authoring *authoringMetadata `json:"reader_authoring"`
+	}
+	_ = json.Unmarshal([]byte(attrsJSON), &attrs)
+	if attrs.Authoring != nil && attrs.Authoring.Template == fm.Template && attrs.Authoring.Version == fm.TemplateVersion {
+		m.MissingGuidance, m.Sections = attrs.Authoring.Missing, attrs.Authoring.Sections
+		m.SectionsTruncated = attrs.Authoring.SectionsTruncated
+		m.Summary = attrs.Authoring.Summary
+		return
+	}
+	// Old indexed metadata cannot attest to the presence of new sections.
+	m.MissingGuidance = []string{"indexed template sections"}
 }
 
 // NoteDocument pairs rerankable text with the note metadata read in the SAME SQL
@@ -92,7 +121,8 @@ func (s *Store) noteMetadataBatch(ctx context.Context, ids []string, out map[str
 	rows, err := s.readDB.QueryContext(ctx, `
 SELECT 'note:' || n.id, n.id, n.path, n.type, n.title, n.scope,
        COALESCE(sup.id, ''), COALESCE(sup.path, ''), COALESCE(sup.scope, ''),
-       `+guidanceFieldsSQL+`
+       CASE WHEN json_valid(sup.frontmatter) THEN COALESCE(json_extract(sup.frontmatter, '$.Status'), '') ELSE '' END,
+       n.frontmatter, COALESCE(gn.attrs, '{}')
 FROM notes n
 LEFT JOIN nodes gn ON gn.id = 'note:' || n.id
 LEFT JOIN notes sup ON sup.id = CASE
@@ -106,15 +136,15 @@ WHERE 'note:' || n.id IN (`+placeholders+`)`, args...)
 	defer rows.Close()
 	for rows.Next() {
 		var m NoteMetadata
-		var guidance string
+		var fmJSON, attrsJSON string
 		if err := rows.Scan(
 			&m.NodeID, &m.NoteID, &m.Path, &m.Type, &m.Title, &m.Scope,
-			&m.SupersededBy, &m.SupersederPath, &m.SupersederScope,
-			&guidance,
+			&m.SupersededBy, &m.SupersederPath, &m.SupersederScope, &m.SupersederState,
+			&fmJSON, &attrsJSON,
 		); err != nil {
 			return err
 		}
-		m.MissingGuidance = missingGuidance(m.Type, guidance)
+		applyReaderMetadata(&m, fmJSON, attrsJSON)
 		out[m.NodeID] = m
 	}
 	return rows.Err()
@@ -131,7 +161,8 @@ func (s *Store) NoteDocuments(ctx context.Context, ids []string) (map[string]Not
 	rows, err := s.readDB.QueryContext(ctx, `
 SELECT si.node_id, n.id, n.path, n.type, n.title, n.scope,
        COALESCE(sup.id, ''), COALESCE(sup.path, ''), COALESCE(sup.scope, ''),
-       si.body, `+guidanceFieldsSQL+`
+       CASE WHEN json_valid(sup.frontmatter) THEN COALESCE(json_extract(sup.frontmatter, '$.Status'), '') ELSE '' END,
+       si.body, n.frontmatter, COALESCE(gn.attrs, '{}')
 FROM search_index si
 JOIN notes n ON si.node_id = 'note:' || n.id
 LEFT JOIN nodes gn ON gn.id = si.node_id
@@ -146,15 +177,15 @@ WHERE si.node_id IN (`+placeholders+`)`, args...)
 	defer rows.Close()
 	for rows.Next() {
 		var d NoteDocument
-		var body, guidance string
+		var body, fmJSON, attrsJSON string
 		if err := rows.Scan(
 			&d.NodeID, &d.NoteID, &d.Path, &d.Type, &d.Title, &d.Scope,
-			&d.SupersededBy, &d.SupersederPath, &d.SupersederScope,
-			&body, &guidance,
+			&d.SupersededBy, &d.SupersederPath, &d.SupersederScope, &d.SupersederState,
+			&body, &fmJSON, &attrsJSON,
 		); err != nil {
 			return nil, err
 		}
-		d.MissingGuidance = missingGuidance(d.Type, guidance)
+		applyReaderMetadata(&d.NoteMetadata, fmJSON, attrsJSON)
 		d.Text = boundedDocument(d.Title, body)
 		out[d.NodeID] = d
 	}

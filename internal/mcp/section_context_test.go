@@ -86,7 +86,7 @@ func TestSectionContextKeepsLifecycleAndScope(t *testing.T) {
 	}
 	narrow, _ := contextFetch(t, s, public, "old", "details")
 	header, section := decodeContext(t, narrow)
-	for key, want := range map[string]string{"status": "retired", "severity": "high", "review_by": "2026-01-01", "do": "Check replacement first.", "dont": "Do not deploy this service.", "supersedes": "legacy", "preamble": "> STATUS: RETIRED. Historical only."} {
+	for key, want := range map[string]string{"status": "retired", "severity": "high", "review_by": "2026-01-01", "legacy_do": "Check replacement first.", "legacy_dont": "Do not deploy this service.", "supersedes": "legacy", "preamble": "> STATUS: RETIRED. Historical only."} {
 		if header.Fields[key] != want {
 			t.Fatalf("%s = %q, want %q", key, header.Fields[key], want)
 		}

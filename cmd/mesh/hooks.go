@@ -612,7 +612,7 @@ func hooksStopCheckCmd() *cobra.Command {
 				"reason":   "Mesh: record what you learned before finishing (keeps the next session smart).",
 				"hookSpecificOutput": map[string]any{
 					"hookEventName":     "Stop",
-					"additionalContext": "Before you finish: if this session produced any non-obvious decision, gotcha, or post-mortem, call mesh_append_note (type decision|gotcha|post-mortem with a one-line do/dont/why), or mesh_write_entity for a new system/tool/concept, so the next agent inherits it. If there is genuinely nothing worth recording, you may stop.",
+					"additionalContext": "Before you finish: record durable, non-obvious knowledge with mesh_append_note. Use mesh_note_template to choose the purpose-specific template, then author a factual summary and its meaningful sections with evidence and verification limits. Use verified collection memberships and links only. Keep missing facts explicit in a draft; do not publish a title-only stub or invent content. If nothing useful was learned, you may stop.",
 				},
 			})
 			fmt.Println(string(out))

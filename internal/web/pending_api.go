@@ -5,6 +5,8 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -35,17 +37,56 @@ func (s *Server) handlePendingList(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []index.PendingNote{}
 	}
-	writeJSON(w, map[string]any{"pending": items})
+	reviews := make([]map[string]any, 0, len(items))
+	for _, p := range items {
+		raw, _ := json.Marshal(p)
+		var item map[string]any
+		_ = json.Unmarshal(raw, &item)
+		// Historical shorthand is review data, never current template fields.
+		delete(item, "do")
+		delete(item, "dont")
+		delete(item, "why")
+		if p.Template == "" || p.HasLegacy() {
+			item["legacy_content"] = p.LegacyReviewText()
+			item["missing_content"] = []string{"reviewed template", "summary", "authored sections"}
+			item["legacy_review_required"] = true
+		} else if spec, err := p.AuthoringSpec(); err == nil {
+			item["missing_content"] = vault.MissingContent(spec)
+		}
+		reviews = append(reviews, item)
+	}
+	writeJSON(w, map[string]any{"pending": reviews, "templates": vault.Templates(), "block_templates": vault.BlockTemplates()})
 }
 
 func (s *Server) handlePendingPromote(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
 	}
-	var req struct {
-		ID string `json:"id"`
+	// A non-nil predicate means folder ACLs are configured, even if this
+	// reviewer can read every path. Its audience cannot be inferred from scopes.
+	// For ordinary members nil means no folder rules. The shared-token
+	// break-glass identity is unrestricted independently of those rules, so its
+	// nil predicate cannot establish an audience when a provider is installed.
+	unprovenBreakGlass := false
+	if s.member != nil && s.member.pathsFor != nil {
+		id, ok := s.member.clientFromRequest(r)
+		unprovenBreakGlass = !ok || id < 0
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&req); err != nil || req.ID == "" {
+	if s.allowedPath(r) != nil || unprovenBreakGlass {
+		http.Error(w, "promotion is unavailable while folder permissions are configured", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		ID        string             `json:"id"`
+		Authoring *index.PendingNote `json:"authoring,omitempty"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil || req.ID == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -58,20 +99,34 @@ func (s *Server) handlePendingPromote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown pending id", http.StatusNotFound)
 		return
 	}
-	// Process shutdown must be able to stop the pre-publication whole-vault id scan.
-	// CreateNoteContext deliberately finishes or removes its O_EXCL claim after the
-	// publication boundary, so using the server lifetime here is safe on both sides.
-	res, err := vault.CreateNoteContext(durableCtx, s.vaultRoot, vault.NewNoteSpec{
-		Type:       vault.NoteType(p.Type),
-		Title:      noDash(p.Title),
-		Do:         noDash(p.Do),
-		Dont:       noDash(p.Dont),
-		Why:        noDash(p.Why),
-		Confidence: p.Confidence,
-		Source:     "agent",
-		Agent:      "mesh-extract",
-		By:         "mesh-extract",
-	})
+	// Review can replace a historical/incomplete draft explicitly. Provenance and
+	// the queue identity remain server-owned, never copied from request metadata.
+	if req.Authoring != nil {
+		authored := *req.Authoring
+		authored.ID, authored.Source, authored.CreatedAt = p.ID, p.Source, p.CreatedAt
+		authored.Confidence = p.Confidence
+		p = authored
+	}
+	spec, err := p.AuthoringSpec()
+	if err != nil {
+		http.Error(w, "draft needs a reviewed template and authored content", http.StatusUnprocessableEntity)
+		return
+	}
+	spec, err = vault.NormalizeSpec(spec)
+	if err == nil {
+		err = vault.ValidateSpec(spec)
+	}
+	if err != nil {
+		http.Error(w, "draft is incomplete or invalid; review required content before publishing", http.StatusUnprocessableEntity)
+		return
+	}
+	if err := s.validatePendingReferences(r, spec); err != nil {
+		http.Error(w, "unknown or inaccessible reference", http.StatusUnprocessableEntity)
+		return
+	}
+	// Publication uses the same durable writer as CLI/MCP. Browser disconnects
+	// cannot abandon bookkeeping after this file creation boundary.
+	res, err := vault.CreateNoteContext(durableCtx, s.vaultRoot, spec)
 	if err != nil {
 		// Never echo the raw error. Everything vault.CreateNote raises about the
 		// FILESYSTEM names the note's ABSOLUTE path, so a promote that hit an unwritable
@@ -191,3 +246,51 @@ func noDash(s string) string {
 		return r
 	}, s)
 }
+
+// validatePendingReferences verifies current files as well as indexed visibility.
+// Review drafts publish to dev, independent of the reviewing admin's wider access.
+func (s *Server) validatePendingReferences(r *http.Request, spec vault.NewNoteSpec) error {
+	audience := (&vault.Frontmatter{Scope: vault.StringList(spec.Scope)}).EffectiveScopes()
+	refs, err := mcp.AuthoringReferences(spec)
+	if err != nil {
+		return errPendingReference
+	}
+	seen := map[string]bool{}
+	for _, ref := range refs {
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		id, anchor, _ := strings.Cut(strings.TrimSpace(ref), "#")
+		if id == "" || len(id) > 256 {
+			return errPendingReference
+		}
+		metadata, err := s.store.NoteMetadataFor(r.Context(), []string{"note:" + id})
+		m, ok := metadata["note:"+id]
+		if err != nil || !ok || !filepath.IsLocal(m.Path) || !s.canReadPath(r, m.Path) {
+			return errPendingReference
+		}
+		if !vault.ScopeAllowsCSV(m.Scope, s.allowedScopes(r)) {
+			return errPendingReference
+		}
+		data, err := vault.ReadConfinedFileContext(r.Context(), s.vaultRoot, m.Path, maxWebNoteBytes)
+		if err != nil {
+			return errPendingReference
+		}
+		fm, _, err := vault.ParseFrontmatter(data)
+		if err != nil || fm == nil || fm.ID != id || vault.UnterminatedFrontmatter(string(data)) || !vault.ScopeAllows(fm.EffectiveScopes(), s.allowedScopes(r)) {
+			return errPendingReference
+		}
+		if !mcp.AuthoringReferenceAnchorValid(data, anchor) {
+			return errPendingReference
+		}
+		for _, scope := range audience {
+			if !vault.ScopeAllows(fm.EffectiveScopes(), map[string]bool{scope: true}) {
+				return errPendingReference
+			}
+		}
+	}
+	return nil
+}
+
+var errPendingReference = fmt.Errorf("unknown or inaccessible reference")

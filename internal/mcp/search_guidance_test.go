@@ -45,7 +45,7 @@ func TestSearchMissingGuidanceWireAndBudget(t *testing.T) {
 			for _, value := range cards {
 				found = true
 				card := value.(map[string]any)
-				if !reflect.DeepEqual(card["MissingGuidance"], []any{"do", "why"}) {
+				if !reflect.DeepEqual(card["MissingGuidance"], []any{"legacy do contains an unfilled placeholder"}) {
 					t.Fatalf("agent received unqualified incomplete guidance: %s", b)
 				}
 				if _, exists := card["NodeID"]; exists {

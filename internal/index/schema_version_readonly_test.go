@@ -178,8 +178,8 @@ func TestDroppedNotesReportsAFailedRead(t *testing.T) {
 // If this fails after a schema edit: bump SchemaVersion (an existing index cannot grow a
 // table on a read-only surface, so it has to be rebuilt) and paste the printed fingerprint.
 func TestSchemaVersionCoversEveryTable(t *testing.T) {
-	const wantVersion = 7
-	const wantFingerprint = "e6bafaf72a"
+	const wantVersion = 8
+	const wantFingerprint = "06050a26e2"
 
 	if SchemaVersion != wantVersion {
 		t.Fatalf("SchemaVersion = %d, this guard is pinned to %d; update both together", SchemaVersion, wantVersion)

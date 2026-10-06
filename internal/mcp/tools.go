@@ -19,7 +19,6 @@ import (
 	"github.com/bright-interaction/mesh/internal/hooks"
 	"github.com/bright-interaction/mesh/internal/index"
 	"github.com/bright-interaction/mesh/internal/latency"
-	"github.com/bright-interaction/mesh/internal/relate"
 	"github.com/bright-interaction/mesh/internal/retrieve"
 	"github.com/bright-interaction/mesh/internal/teamtelemetry"
 	"github.com/bright-interaction/mesh/internal/vault"
@@ -93,30 +92,6 @@ func ToolSpecs() []map[string]any {
 			"inputSchema": obj(map[string]any{"type": "object", "properties": map[string]any{"id": str, "limit": intp}}),
 		},
 		{
-			"name":        "mesh_append_note",
-			"description": "Create a durable decision, gotcha, post-mortem, map, or note; Mesh fills id, timestamp, placement, and agent provenance.",
-			"inputSchema": obj(map[string]any{
-				"type":     "object",
-				"required": []string{"type", "title"},
-				"properties": map[string]any{
-					"type": str, "title": str, "do": str, "dont": str, "why": str,
-					"related": strList, "tags": strList, "status": str, "severity": str,
-					// Optional provenance. Mesh stamps the calling agent + source=agent
-					// automatically; override author/confidence/review_by when you know them.
-					"author": str, "source": str, "source_url": str, "confidence": str, "review_by": str,
-				},
-			}),
-		},
-		{
-			"name":        "mesh_write_entity",
-			"description": "Create a system, tool, or concept entity with related links.",
-			"inputSchema": obj(map[string]any{
-				"type":       "object",
-				"required":   []string{"title"},
-				"properties": map[string]any{"title": str, "why": str, "related": strList, "tags": strList},
-			}),
-		},
-		{
 			"name":        "mesh_reindex",
 			"description": "Rebuild the index after direct note-file edits; Mesh write tools already reindex automatically.",
 			"inputSchema": obj(map[string]any{"type": "object", "properties": map[string]any{}}),
@@ -188,7 +163,7 @@ func ToolSpecs() []map[string]any {
 			}),
 		},
 	}
-	return tools
+	return append(tools, authoringToolSpecs()...)
 }
 
 // Contract returns the agent-usage contract text (how to retrieve cheaply), shared
@@ -236,21 +211,27 @@ const (
 // the same time you add it to ToolSpecs() and the dispatch, having decided how it
 // relates to scope. The test + the runtime check below both fail closed otherwise.
 var toolScopeClass = map[string]toolClass{
-	"mesh_search":         classFiltered,
-	"mesh_fetch":          classFiltered,
-	"mesh_fetch_many":     classFiltered,
-	"mesh_god_nodes":      classFiltered,
-	"mesh_changed_since":  classFiltered,
-	"mesh_neighbors":      classFiltered,
-	"mesh_community":      classFiltered,
-	"mesh_reindex":        classFiltered,
-	"mesh_health":         classFiltered,
-	"mesh_append_note":    classWrite,
-	"mesh_write_entity":   classWrite,
-	"mesh_code_search":    classCodeDev,
-	"mesh_code_neighbors": classCodeDev,
-	"mesh_code_context":   classCodeDev,
-	"mesh_setup_hooks":    classOpen,
+	"mesh_drafts":           classFiltered,
+	"mesh_templates":        classOpen,
+	"mesh_note_template":    classOpen,
+	"mesh_block_template":   classOpen,
+	"mesh_author_note":      classWrite,
+	"mesh_propose_template": classWrite,
+	"mesh_search":           classFiltered,
+	"mesh_fetch":            classFiltered,
+	"mesh_fetch_many":       classFiltered,
+	"mesh_god_nodes":        classFiltered,
+	"mesh_changed_since":    classFiltered,
+	"mesh_neighbors":        classFiltered,
+	"mesh_community":        classFiltered,
+	"mesh_reindex":          classFiltered,
+	"mesh_health":           classFiltered,
+	"mesh_append_note":      classWrite,
+	"mesh_write_entity":     classWrite,
+	"mesh_code_search":      classCodeDev,
+	"mesh_code_neighbors":   classCodeDev,
+	"mesh_code_context":     classCodeDev,
+	"mesh_setup_hooks":      classOpen,
 	// Secret-broker tools broker an ATTACHED Dockyard vault, not vault-note content, so
 	// no per-note scope crosses a boundary (classOpen). All three apply the write-role
 	// gate inside their handler: minting a token spends the team's credential, and
@@ -275,6 +256,18 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		return nil, &rpcError{Code: codeMethodNotFound, Message: "unknown tool", Data: p.Name}
 	}
 	switch p.Name {
+	case "mesh_drafts":
+		return s.toolDrafts(ctx, p.Arguments)
+	case "mesh_templates":
+		return textResult(templateCatalog()), nil
+	case "mesh_note_template":
+		return s.toolTemplate(p.Arguments, false)
+	case "mesh_block_template":
+		return s.toolTemplate(p.Arguments, true)
+	case "mesh_author_note":
+		return s.toolAuthorNote(ctx, p.Arguments)
+	case "mesh_propose_template":
+		return s.toolProposeTemplate(ctx, p.Arguments)
 	case "mesh_search":
 		return s.toolSearch(ctx, p.Arguments)
 	case "mesh_fetch":
@@ -889,9 +882,16 @@ func (s *Server) toolSearch(ctx context.Context, raw json.RawMessage) (any, *rpc
 // TTY sinks already have). A card from the team's own notes passes through untouched.
 func labelCard(c retrieve.Card) searchCard {
 	sc := searchCard{Card: c}
-	if src, ok := importedSource(c.Path); ok {
+	src, imported := importedSource(c.Path)
+	if strings.HasPrefix(c.Source, "import:") {
+		src, imported = c.Source, true
+	}
+	if imported {
 		sc.Source = src
-		sc.Snippet = wrapUntrusted(src, "", c.Snippet)
+		sc.Snippet = wrapUntrusted(src, c.SourceURL, c.Snippet)
+		if c.Summary != "" {
+			sc.Summary = wrapUntrusted(src, c.SourceURL, c.Summary)
+		}
 	}
 	return sc
 }
@@ -1025,7 +1025,7 @@ func (s *Server) formatFetchDocument(ctx context.Context, id, rel, body string, 
 				spans = append(kept, span{sec, start, end})
 			}
 		}
-		prefix, rerr := s.sectionContext(ctx, id, rel, body, imported)
+		prefix, rerr := s.sectionContext(ctx, id, rel, body, imported, anchors)
 		if rerr != nil {
 			return "", rerr
 		}
@@ -1245,6 +1245,9 @@ func (s *Server) toolChangedSince(ctx context.Context, raw json.RawMessage) (any
 const writePreparationTimeout = 15 * time.Second
 
 func (s *Server) toolWrite(ctx context.Context, raw json.RawMessage, forceType string) (any, *rpcError) {
+	if err := vault.RequireAuthoringWrites(); err != nil {
+		return nil, &rpcError{Code: codeInvalidParams, Message: err.Error()}
+	}
 	trace := latency.Start("mcp_write", "validate")
 	defer trace.End()
 	budget := s.writePrepareTimeout
@@ -1260,88 +1263,24 @@ func (s *Server) toolWrite(ctx context.Context, raw json.RawMessage, forceType s
 	if ctx.Err() != nil || prepareCtx.Err() != nil {
 		return nil, &rpcError{Code: codeInternalError, Message: "request cancelled before the note was written"}
 	}
-	var a struct {
-		Type       string   `json:"type"`
-		Title      string   `json:"title"`
-		Do         string   `json:"do"`
-		Dont       string   `json:"dont"`
-		Why        string   `json:"why"`
-		Related    []string `json:"related"`
-		Tags       []string `json:"tags"`
-		Status     string   `json:"status"`
-		Severity   string   `json:"severity"`
-		Author     string   `json:"author"`
-		Source     string   `json:"source"`
-		SourceURL  string   `json:"source_url"`
-		Confidence string   `json:"confidence"`
-		ReviewBy   string   `json:"review_by"`
-		Scope      string   `json:"scope"`
+	var a authoringArgs
+	if err := decodeAuthoring(raw, &a); err != nil {
+		return nil, &rpcError{Code: codeInvalidParams, Message: err.Error()}
 	}
-	json.Unmarshal(raw, &a)
-	// Role write gate (independent of scope): a read-only hosted client must not
-	// create notes. This is enforced FIRST because the scope gate below leaves
-	// sf nil when the team has not configured scoping, which would otherwise skip
-	// the only write check and let a viewer-role token write. Unset (local solo
-	// binary) means the caller owns the vault, so writes are allowed there.
-	if can, set := writeAllowed(ctx); set && !can {
-		return nil, &rpcError{Code: codeInvalidParams, Message: "forbidden: your role is read-only"}
+	spec, rerr := s.authoringSpec(prepareCtx, a, forceType)
+	if rerr != nil {
+		return nil, rerr
 	}
-	// Scope write gate: a scoped caller may only create notes in a scope they can
-	// write, and the new note is stamped with that scope. A nil filter (solo / no-scope
-	// hub) leaves noteScope empty so the note carries no scope frontmatter (= dev).
-	var noteScope []string
-	if sf := scopeFromCtx(ctx); sf != nil {
-		want := strings.TrimSpace(a.Scope)
-		if want == "" {
-			want = sf.WriteScope
+	if spec.Status != "draft" {
+		if err := vault.ValidateSpec(spec); err != nil {
+			return nil, &rpcError{Code: codeInvalidParams, Message: err.Error()}
 		}
-		if want == "" {
-			return nil, &rpcError{Code: codeInvalidParams, Message: "your account is not in a single scope; pass an explicit `scope`"}
-		}
-		if sf.CanWrite == nil || !sf.CanWrite(want) {
-			return nil, &rpcError{Code: codeInvalidParams, Message: "forbidden: you cannot write notes in scope " + want}
-		}
-		noteScope = []string{want}
 	}
-	t := a.Type
-	if forceType != "" {
-		t = forceType
+	if err := s.validateAuthoringLinks(prepareCtx, spec); err != nil {
+		return nil, &rpcError{Code: codeInvalidParams, Message: "unknown, invalid or inaccessible authoring reference"}
 	}
-	if t == "" {
-		t = "note"
-	}
-	// Provenance: default source to "agent" and stamp the calling tool so the audit
-	// trail, lifecycle checks, and contributor view know who wrote this.
-	s.mu.RLock()
-	agent := s.agent
-	s.mu.RUnlock()
-	caller, hosted := TeamCallerFromContext(ctx)
-	if hosted {
-		// Hosted authorship is an authenticated fact, not a caller-controlled field.
-		a.Author = caller.User
-		// HTTP initialize is stateless and server-global, so its clientInfo cannot be
-		// safely associated with this user. Use a truthful stable transport label.
-		agent = "mesh-hosted-mcp"
-	}
-	source := strings.TrimSpace(a.Source)
-	if source == "" {
-		source = "agent"
-	}
-	// `related` is optional, and an agent that omits it writes a note with no
-	// note-to-note edge: findable by full-text, invisible to graph proximity, and a
-	// disconnected dot in the web app. That is not a rare slip. On 2026-08-06 the
-	// reference vault carried 111 such notes out of 1140, and they skewed tier-0
-	// (67 gotchas, 31 decisions, 13 post-mortems), so the material retrieval is meant
-	// to surface first was the least reachable. Derive the links from the note's own
-	// text when the caller supplies none; an explicit list always wins, including an
-	// explicit decision to pass none that survives as an empty non-nil slice.
-	related := a.Related
-	trace.Phase("related")
-	if len(related) == 0 {
-		g, rt := s.snapshot()
-		related = relate.Derive(prepareCtx, rt, g,
-			strings.TrimSpace(a.Title+"\n"+a.Do+"\n"+a.Why), "", a.Tags, 3)
-	}
+	t, source := string(spec.Type), spec.Source
+
 	// Preparation above is reversible and can include retrieval work. Cancellation may
 	// arrive after the entry check while it runs, so check once more at the exact durable
 	// boundary. There is deliberately no cancellation error after CreateNote returns:
@@ -1351,12 +1290,7 @@ func (s *Server) toolWrite(ctx context.Context, raw json.RawMessage, forceType s
 	}
 	writtenAt := time.Now()
 	trace.Phase("publish")
-	res, err := s.publishNote(prepareCtx, vault.NewNoteSpec{
-		Type: vault.NoteType(t), Title: a.Title, Do: a.Do, Dont: a.Dont, Why: a.Why,
-		Related: related, Tags: a.Tags, Status: a.Status, Severity: a.Severity,
-		Author: a.Author, Agent: agent, Source: source, SourceURL: a.SourceURL,
-		Confidence: a.Confidence, ReviewBy: a.ReviewBy, By: agent, Scope: noteScope,
-	})
+	res, err := s.publishNote(prepareCtx, spec)
 	// Release the preparation timer now. The original caller context governs the
 	// independent indexing acknowledgement; an expired preparation budget must not
 	// turn a publisher's confirmed durable result into a failed-write receipt.
@@ -1421,13 +1355,15 @@ func (s *Server) toolWrite(ctx context.Context, raw json.RawMessage, forceType s
 	// a correctness one, and paying a write lock per window to keep it exact is the
 	// contention this split exists to remove.
 	trace.Phase("telemetry")
-	_ = s.store.IncrMetric("writes", 1)
-	_ = s.store.RecordWriteback(res.ID, source)
-	writebackPath := res.Path
-	if rel, rerr := filepath.Rel(s.vaultRoot, res.Path); rerr == nil {
-		writebackPath = filepath.ToSlash(rel)
+	if spec.Status != "draft" {
+		_ = s.store.IncrMetric("writes", 1)
+		_ = s.store.RecordWriteback(res.ID, source)
+		writebackPath := res.Path
+		if rel, rerr := filepath.Rel(s.vaultRoot, res.Path); rerr == nil {
+			writebackPath = filepath.ToSlash(rel)
+		}
+		observeTeamWriteback(ctx, res.ID, writebackPath, source, writtenAt)
 	}
-	observeTeamWriteback(ctx, res.ID, writebackPath, source, writtenAt)
 	// Return a vault-relative path, never the server's absolute filesystem path:
 	// on a hosted hub the absolute path would leak the server's absolute vault path
 	// to the agent.
@@ -1437,7 +1373,7 @@ func (s *Server) toolWrite(ctx context.Context, raw json.RawMessage, forceType s
 	} else {
 		notePath = filepath.Base(res.Path)
 	}
-	out := map[string]any{"id": res.ID, "path": notePath, "when": res.When, "todo": res.TODOs}
+	out := map[string]any{"id": res.ID, "path": notePath, "when": res.When, "todo": res.TODOs, "status": spec.Status, "template": spec.Template, "template_version": spec.TemplateVersion, "revision": res.Revision}
 	if indexStale != "" {
 		out["index_stale"] = true
 		out["index_error"] = indexStale
@@ -1574,11 +1510,16 @@ type sectionContextEnvelope struct {
 	Fields            map[string]string `json:"fields"`
 }
 
-func (s *Server) sectionContext(ctx context.Context, id, rel, doc string, imported bool) (string, *rpcError) {
-	fmText, _, _ := vault.SplitFrontmatter(doc)
+func (s *Server) sectionContext(ctx context.Context, id, rel, doc string, imported bool, anchors []string) (string, *rpcError) {
+	fmText, noteBody, _ := vault.SplitFrontmatter(doc)
 	fm, _, err := vault.ParseFrontmatter([]byte(fmText))
 	if err != nil || vault.UnterminatedFrontmatter(doc) {
 		return "", &rpcError{Code: codeInvalidParams, Message: "invalid note metadata; explicitly fetch the full note to inspect it"}
+	}
+	if fm.Template != "" || fm.TemplateVersion != 0 {
+		if _, err := vault.ReadAuthoring(fm, noteBody); err != nil {
+			return "", &rpcError{Code: codeInvalidParams, Message: "invalid authored structure; explicitly fetch the full note to inspect it"}
+		}
 	}
 	metadata, err := s.store.NoteMetadataFor(ctx, []string{"note:" + id})
 	if err != nil {
@@ -1591,8 +1532,24 @@ func (s *Server) sectionContext(ctx context.Context, id, rel, doc string, import
 	}
 	fields := map[string]string{
 		"status": fm.Status, "severity": fm.Severity, "review_by": fm.ReviewBy,
-		"do": fm.Do, "dont": fm.Dont, "supersedes": strings.Join(fm.Supersedes, ", "),
+		"supersedes": strings.Join(fm.Supersedes, ", "),
+		"source":     fm.Source, "source_url": fm.SourceURL, "template": fm.Template,
 	}
+
+	// Historical fields retain their original labels only in the compatibility
+	// envelope. Modern notes obtain their context from authored body sections.
+	for key, text := range vault.ReadLegacy(fm).Values() {
+		if !vault.Unfilled(text) {
+			fields["legacy_"+key] = text
+		}
+	}
+	for _, key := range []string{"summary", "applicability", "prerequisites", "limitations", "evidence", "verification", "dependencies", "cause", "root_cause", "resolution", "impact", "consequences", "recovery"} {
+		if text := contextualSectionText(fm, noteBody, key); text != "" {
+			fields[key] = text
+		}
+	}
+
+	addSelectedBlockContext(fields, fm, noteBody, anchors)
 	// The source file may have no retirement mark at all. Resolve the current
 	// incoming relation without exposing the existence of a fenced replacement.
 	if m.SupersededBy != "" && m.SupersederPath != "" && (sf == nil || vault.ScopeAllowsCSV(m.SupersederScope, sf.AllowedRead)) {
@@ -1641,6 +1598,10 @@ func encodeSectionContext(fields map[string]string) string {
 		}
 		envelope.ContextTruncated = true
 		for key, value := range envelope.Fields {
+			if len(value) < 2 {
+				delete(envelope.Fields, key)
+				continue
+			}
 			envelope.Fields[key] = clipSectionContext(value, len(value)/2)
 		}
 	}
@@ -1674,7 +1635,14 @@ func resolveAnchorSection(body, anchor string) (string, int) {
 }
 
 func resolveAnchorSpan(body, anchor string) (string, int, int, int) {
-	lines, markerLines, headingLines := anchorDocumentLines(body)
+	header, noteBody, _ := vault.SplitFrontmatter(body)
+	fm, _, _ := vault.ParseFrontmatter([]byte(header))
+	return resolveAuthoredAnchorSpan(fm, noteBody, anchor)
+}
+
+func resolveAuthoredAnchorSpan(fm *vault.Frontmatter, noteBody, anchor string) (string, int, int, int) {
+	lines, markerLines, headingLines := anchorDocumentLines(noteBody)
+	blockAnchors := vault.AuthoredHeadingAnchors(fm, noteBody)
 	anchor = norm.NFC.String(anchor)
 	if anchor == "" {
 		return "", 0, 0, 0
@@ -1683,9 +1651,21 @@ func resolveAnchorSpan(body, anchor string) (string, int, int, int) {
 	// Search every current anchor before accepting a legacy alias. Otherwise the legacy
 	// slug of an earlier Unicode heading can shadow the exact current slug of a later
 	// heading, returning a valid but entirely wrong section.
-	start, level, matches := findAnchorHeading(markerLines, headingLines, anchor, false)
+	start, level, matches := findAnchorHeading(markerLines, headingLines, anchor, false, blockAnchors)
 	if start < 0 {
-		start, level, matches = findAnchorHeading(markerLines, headingLines, anchor, true)
+		if fm != nil {
+			if content, err := vault.ReadAuthoring(fm, noteBody); err == nil {
+				for _, section := range content.OrderedSections {
+					if section.Key == anchor {
+						start, level, matches = findAnchorHeading(markerLines, headingLines, section.Anchor, false, blockAnchors)
+						break
+					}
+				}
+			}
+		}
+	}
+	if start < 0 {
+		start, level, matches = findAnchorHeading(markerLines, headingLines, anchor, true, nil)
 	}
 	if matches != 1 {
 		return "", 0, 0, matches
@@ -1705,10 +1685,17 @@ func resolveAnchorSpan(body, anchor string) (string, int, int, int) {
 // uses to build heading nodes, so what it lists is exactly what resolves.
 func anchorsOf(body string) []string {
 	var out []string
+	header, noteBody, _ := vault.SplitFrontmatter(body)
+	fm, _, _ := vault.ParseFrontmatter([]byte(header))
+	blockAnchors := vault.AuthoredHeadingAnchors(fm, noteBody)
 	_, markerLines, headingLines := anchorDocumentLines(body)
 	for i := range markerLines {
 		if heading, ok := vault.ParseATXHeading(markerLines[i], headingLines[i]); ok && heading.Anchor != "" {
-			out = append(out, heading.Anchor)
+			anchor := heading.Anchor
+			if address := blockAnchors[i+1]; address != "" {
+				anchor = address
+			}
+			out = append(out, anchor)
 		}
 	}
 	return out
@@ -1725,7 +1712,7 @@ func anchorDocumentLines(doc string) (original, markerLines, headingLines []stri
 	return strings.Split(body, "\n"), strings.Split(markers, "\n"), strings.Split(headings, "\n")
 }
 
-func findAnchorHeading(markerLines, headingLines []string, anchor string, legacy bool) (start, level, matches int) {
+func findAnchorHeading(markerLines, headingLines []string, anchor string, legacy bool, blockAnchors map[int]string) (start, level, matches int) {
 	start = -1
 	for i := range markerLines {
 		heading, ok := vault.ParseATXHeading(markerLines[i], headingLines[i])
@@ -1733,6 +1720,9 @@ func findAnchorHeading(markerLines, headingLines []string, anchor string, legacy
 			continue
 		}
 		candidate := heading.Anchor
+		if address := blockAnchors[i+1]; address != "" {
+			candidate = address
+		}
 		if legacy {
 			candidate = slugifyLegacy(heading.VisibleText)
 		}

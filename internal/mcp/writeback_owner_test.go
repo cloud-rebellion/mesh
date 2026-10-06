@@ -112,7 +112,7 @@ func writeNoteVia(t *testing.T, srv *Server, title string) map[string]any {
 		"name": "mesh_append_note",
 		"arguments": map[string]any{
 			"type": "gotcha", "title": title,
-			"do": "do the thing", "dont": "do not do the other thing", "why": "because",
+			"summary": "Exercise owner acknowledgement using a complete synthetic troubleshooting note.", "sections": fixtureSections("gotcha"),
 		},
 	})
 	if err != nil {

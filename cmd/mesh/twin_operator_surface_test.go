@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bright-interaction/mesh/internal/vault"
 	"github.com/bright-interaction/mesh/pkg/meshclient"
 )
 
@@ -118,75 +117,19 @@ func TestSyncSummaryTellsTheOperatorWorkRemains(t *testing.T) {
 	}
 }
 
-// noFrontmatterNote is what BackfillBodyFile refuses: a markdown file with no
-// frontmatter block at all. It is the cheapest deterministic per-file failure.
-const noFrontmatterNote = "# Just a heading\n\nAnd a body, with no frontmatter.\n"
-
-// TestFillNoteBodiesExitsNonZeroWhenFilesFail is the errored-exit twin. `mesh migrate`
-// and `mesh scope backfill` were both changed to return non-zero when files failed;
-// `mesh structure --fill-bodies` is the third bulk rewriter and kept `return nil`, so
-// a run that failed on every note printed each failure and still exited 0. Every
-// script wrapping it read that as a clean run.
-func TestFillNoteBodiesExitsNonZeroWhenFilesFail(t *testing.T) {
-	tests := []struct {
-		name    string
-		notes   map[string]string
-		apply   bool
-		wantErr bool
-		wantOut string
-	}{
-		{
-			name:    "every note fails: dry run",
-			notes:   map[string]string{"a.md": noFrontmatterNote, "b.md": noFrontmatterNote},
-			wantErr: true,
-			wantOut: "failed on 2",
-		},
-		{
-			name:    "every note fails: apply",
-			notes:   map[string]string{"a.md": noFrontmatterNote, "b.md": noFrontmatterNote},
-			apply:   true,
-			wantErr: true,
-			wantOut: "failed on 2",
-		},
-		{
-			name:    "one failure among good notes still fails the run",
-			notes:   map[string]string{"good.md": goodNote, "bad.md": noFrontmatterNote},
-			apply:   true,
-			wantErr: true,
-			wantOut: "failed on 1",
-		},
-		{
-			name:    "a clean vault still exits 0",
-			notes:   map[string]string{"good.md": goodNote},
-			apply:   true,
-			wantErr: false,
-			wantOut: "note body(ies)",
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			for name, body := range tc.notes {
-				writeNote(t, dir, name, body)
-			}
-			files, err := vault.Walk(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			out, runErr := capture(t, func() error { return fillNoteBodies(dir, files, tc.apply) })
-			if tc.wantErr && runErr == nil {
-				t.Errorf("fill-bodies exited 0 after failing on files\n%s", out)
-			}
-			if !tc.wantErr && runErr != nil {
-				t.Errorf("fill-bodies failed on a clean vault: %v\n%s", runErr, out)
-			}
-			if !strings.Contains(out, tc.wantOut) {
-				t.Errorf("output missing %q:\n%s", tc.wantOut, out)
-			}
-			if !tc.wantErr && strings.Contains(out, "failed on") {
-				t.Errorf("clean vault reported failures:\n%s", out)
-			}
-		})
+func TestRetiredFillBodiesCannotPublish(t *testing.T) {
+	for _, apply := range []bool{false, true} {
+		dir := t.TempDir()
+		original := "---\nid: incident\ntype: post-mortem\nwhy: An unverified explanation.\ndont: Avoid premature conclusions.\n---\n# Incident\n"
+		path := writeNote(t, dir, "incident.md", original)
+		_, err := capture(t, func() error { return fillNoteBodies(dir, []string{path}, apply) })
+		if err == nil || !strings.Contains(err.Error(), "migration-preview") {
+			t.Fatalf("retired conversion not refused: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != original {
+			t.Fatalf("retired conversion changed source: %q %v", got, err)
+		}
 	}
 }
 

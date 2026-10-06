@@ -24,7 +24,7 @@ func TestCanceledIDScanReportsPhaseWithoutUserData(t *testing.T) {
 	root := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	res, err := createNoteContext(ctx, root, NewNoteSpec{Type: TypeDecision, Title: "sensitive-title", Do: "sensitive-body"},
+	res, err := createNoteContext(ctx, root, completeFixtureSpec(NewNoteSpec{Type: TypeDecision, Title: "sensitive-title", Do: "sensitive-body"}),
 		func(context.Context, string) (map[string]string, error) {
 			// Hold the reversible boundary long enough for the production slow
 			// summary, then cancel. No note or empty type directory may remain.

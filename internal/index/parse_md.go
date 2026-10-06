@@ -213,9 +213,8 @@ func Parse(path string, data []byte) (*ParsedNote, error) {
 		pn.Issues = append(pn.Issues, Issue{path, "unterminated-fence",
 			"a code fence is opened and never closed in the body, so everything below it is hidden from the graph and from search; close the fence"})
 	}
-	for _, field := range []struct {
-		name, text string
-	}{{"do", fm.Do}, {"dont", fm.Dont}, {"why", fm.Why}} {
+	for _, name := range []string{"do", "dont", "why"} {
+		field := struct{ name, text string }{name, vault.ReadLegacy(fm).Values()[name]}
 		if field.text == "" {
 			continue
 		}
@@ -231,10 +230,14 @@ func Parse(path string, data []byte) (*ParsedNote, error) {
 	}
 	cleanLines := strings.Split(clean, "\n")
 	headingLines := strings.Split(headingText, "\n")
+	blockAnchors := vault.AuthoredHeadingAnchors(pn.FM, pn.Body)
 	for i, line := range cleanLines {
 		ln := i + 1
 		if h, ok := parseHeadingViews(line, headingLines[i]); ok {
 			h.Line = ln
+			if address := blockAnchors[ln]; address != "" {
+				h.Anchor = address
+			}
 			pn.Headings = append(pn.Headings, h)
 			pn.appendLinks(line, ln)
 			continue
@@ -403,6 +406,7 @@ func BuildGraphContext(ctx context.Context, notes []*ParsedNote) (*graph.Graph, 
 			pathByStableKey[stableKey] = n.Path
 		}
 		anchors := make(map[string]bool, len(n.Headings))
+		rawAnchorCounts := map[string]int{}
 		for _, h := range n.Headings {
 			if err := buildGraphContextCause(ctx); err != nil {
 				return nil, nil, err
@@ -410,8 +414,25 @@ func BuildGraphContext(ctx context.Context, notes []*ParsedNote) (*graph.Graph, 
 			if h.Anchor != "" {
 				anchors[h.Anchor] = true
 			}
+			rawAnchorCounts[vault.Slugify(h.Text)]++
+		}
+		// Retain unique Markdown aliases. Repeated block fields are available
+		// through their scoped addresses; an ambiguous alias never picks one.
+		for alias, count := range rawAnchorCounts {
+			if alias != "" && count == 1 {
+				anchors[alias] = true
+			}
 		}
 		anchorsByID[id] = anchors
+		if n.FM.Template != "" {
+			if authored, err := vault.ReadAuthoring(n.FM, n.Body); err == nil {
+				for _, section := range authored.OrderedSections {
+					if strings.TrimSpace(section.Text) != "" {
+						anchors[vault.Slugify(section.Key)] = true
+					}
+				}
+			}
+		}
 		pathByID[id] = n.Path
 		pathByKey[n.Key] = n.Path
 		idByKey[n.Key] = id
@@ -486,7 +507,7 @@ func BuildGraphContext(ctx context.Context, notes []*ParsedNote) (*graph.Graph, 
 		if n.FM.When != "" {
 			attrs["when"] = n.FM.When
 		}
-		for k, v := range map[string]string{"do": n.FM.Do, "dont": n.FM.Dont, "why": n.FM.Why} {
+		for k, v := range vault.ReadLegacy(n.FM).Values() {
 			if err := buildGraphContextCause(ctx); err != nil {
 				return nil, nil, err
 			}
@@ -496,6 +517,16 @@ func BuildGraphContext(ctx context.Context, notes []*ParsedNote) (*graph.Graph, 
 				attrs[k] = clean
 			}
 		}
+		authored, authoringErr := vault.ReadAuthoring(n.FM, n.Body)
+		reader := readerAuthoringFrom(n, authored, authoringErr)
+		attrs["status"] = n.FM.Status
+		attrs["summary"] = reader.Summary
+		attrs["template"] = n.FM.Template
+		attrs["template_version"] = n.FM.TemplateVersion
+		attrs["verified_at"] = n.FM.VerifiedAt
+		attrs["collections"] = []string(n.FM.Collections)
+		attrs["reader_authoring"] = reader
+		attrs["reader_behavior"] = readerBehaviorFrom(n, authored, authoringErr)
 		g.AddNode(&graph.Node{ID: noteNode, Kind: "note", Label: title, NoteID: id, NotePath: n.Path, Attrs: attrs})
 
 		seenHeading := map[string]int{}
@@ -592,13 +623,11 @@ func BuildGraphContext(ctx context.Context, notes []*ParsedNote) (*graph.Graph, 
 			}
 			addRef(r, 0)
 		}
-		// do/dont/why are prose, and they are the prose a search card actually shows, so
-		// authors write [[links]] in them and reasonably expect those to be links. They
-		// were silently dropped: 82 of them resolved to real notes in the live vault and
-		// produced no edge at all, while the handful that did not resolve went unreported,
-		// so neither the author nor the graph got anything. Read through the same markup
-		// scanner as the body, so a backticked `[[note-id]]` stays the syntax example it is.
-		for _, field := range []string{n.FM.Do, n.FM.Dont, n.FM.Why} {
+		// Preserve links authored in historical frontmatter prose through the legacy
+		// adapter. Use the body's markup scanner so code and syntax examples remain
+		// non-content rather than becoming semantic references.
+		for _, name := range []string{"do", "dont", "why"} {
+			field := vault.ReadLegacy(n.FM).Values()[name]
 			if err := buildGraphContextCause(ctx); err != nil {
 				return nil, nil, err
 			}
@@ -646,7 +675,7 @@ func BuildGraphContext(ctx context.Context, notes []*ParsedNote) (*graph.Graph, 
 		if err := buildGraphContextCause(ctx); err != nil {
 			return nil, nil, err
 		}
-		if len(n.FM.Supersedes) == 0 {
+		if len(n.FM.Supersedes) == 0 || vault.IsDraft(n.FM) {
 			continue
 		}
 		srcID := effectiveID(n)

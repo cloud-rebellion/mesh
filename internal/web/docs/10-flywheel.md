@@ -6,9 +6,11 @@ page is how Mesh feeds, measures, and proves that loop.
 
 ## The loop
 
-1. An agent does work and learns something non-obvious (a decision, a gotcha, a
-   post-mortem).
-2. It calls `mesh_append_note` with a one-line do / dont / why. Mesh files it.
+1. An agent does work and learns something useful: a finding, decision, procedure or
+   incident account, with evidence and the limits of what was verified.
+2. It selects a purpose-specific template and calls `mesh_author_note` with a summary
+   and authored sections. Complete notes publish normally; incomplete work stays in
+   the draft inbox. Mesh derives identity, timestamps and placement.
 3. The next agent, on its next session, retrieves that note and starts smarter.
 
 The session hooks (`mesh hooks install`) make this automatic: read the mesh at the
@@ -38,14 +40,27 @@ with no write-back, an opt-in Stop hook (`mesh hooks install --extract`) extract
 candidate notes from the transcript using your own LLM and puts them in the **Review**
 tab.
 
-You review them with one click: **Keep** promotes a candidate into a real note (and it
-becomes searchable immediately); **Discard** drops it. Nothing lands unreviewed.
+Open a candidate, resolve uncertainty and fill the selected template's required
+sections. **Publish note** validates the content and supported references, then saves
+it through the shared writer; **Discard** removes the candidate. The queue entry stays
+until publication succeeds. The receipt distinguishes a saved note from a pending
+index update. Historical candidates keep their original wording for a deliberate
+rewrite rather than being silently assigned new meanings.
+
+This queue helps inspect transcript-derived candidates. It is not an approval gate
+for ordinary complete notes using an available template. New or changed library
+templates and blocks require approval. With configured hosted folder rules,
+queue publication currently fails closed because it cannot prove that the destination
+has the same audience; the candidate remains queued. Identified members can publish
+when no folder rules exist. An unrestricted shared-token callback alone cannot
+establish that absence.
 
 Two honest properties of auto-extraction:
 
-- It trades precision for coverage. On a benchmark it surfaced a candidate in far more
-  sessions than the manual nudge (which was near zero), at moderate precision, which is
-  exactly why a human reviews before anything is kept.
+- Transcript extraction can mistake a local observation for a general rule. Keep the
+  source and confidence visible, and leave unsupported facts incomplete. The judge
+  corpus now uses purpose-specific prose; historical benchmark results need a new
+  baseline before they support claims about this authoring format.
 - Candidates that merely restate a note you already have are filtered out (deduped
   against the vault), so the queue shows new knowledge, not echoes.
 

@@ -20,8 +20,8 @@
   }
 
   function guidanceHTML(c) {
-    const missing = c && Array.isArray(c.MissingGuidance) ? c.MissingGuidance : [];
-    return missing.length ? '<div class="rc-warning">Incomplete guidance: missing ' + esc(missing.join(", ")) + '; verify before relying on this note.</div>' : "";
+    const missing = c && Array.isArray(c.MissingContent) ? c.MissingContent : (c && Array.isArray(c.MissingGuidance) ? c.MissingGuidance : []);
+    return missing.length ? '<div class="rc-warning">Incomplete authored content: missing ' + esc(missing.join(", ")) + '; verify before relying on this note.</div>' : "";
   }
 
   function supersededHTML(c) {

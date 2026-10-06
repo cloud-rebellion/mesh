@@ -108,6 +108,29 @@ func mcpServeResult(t *testing.T, ch <-chan error) error {
 	}
 }
 
+// Keep the lifecycle fixture complete so a receipt proves the admitted write
+// reached durable publication rather than merely testing argument rejection.
+func mcpDrainWritePayload(title string) string {
+	b, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "mesh_append_note", "arguments": map[string]any{
+			"template": "decision", "template_version": 1, "title": title,
+			"summary": "The fixture checks that an admitted write finishes before shutdown closes its owner.",
+			"sections": map[string]string{
+				"context":      "The test shuts down HTTP admission while a note write is in flight.",
+				"options":      "Cancel the admitted write or allow it to finish during the drain grace period.",
+				"decision":     "Allow the admitted write to finish before closing the watcher and store.",
+				"rationale":    "The caller needs a durable receipt during a controlled restart.",
+				"consequences": "New admission stops first; an expiry still bounds shutdown.",
+			},
+		}},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
 func TestMCPHTTPDrainCompletesWriteBeforeWatcherAndStoreClose(t *testing.T) {
 	if mcpHTTPDrainGrace <= mcp.OwnerIndexBound {
 		t.Fatal("HTTP grace must leave room for a normal write acknowledgement")
@@ -166,7 +189,7 @@ func TestMCPHTTPDrainCompletesWriteBeforeWatcherAndStoreClose(t *testing.T) {
 		unblockWatch()
 		mcpAwait(t, finished, "test server cleanup")
 	}()
-	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mesh_append_note","arguments":{"type":"decision","title":"HTTP drain preserves admitted write","do":"Finish the admitted write before closing the store","why":"A restart must allow the receipt to finish"}}}`
+	body := mcpDrainWritePayload("HTTP drain preserves admitted write")
 	response := make(chan string, 1)
 	go func() {
 		client := &http.Client{Timeout: 15 * time.Second}
@@ -430,7 +453,7 @@ func TestMCPHTTPSignalDrainsWrite(t *testing.T) {
 			}
 			defer conn.Close()
 			_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
-			body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mesh_append_note","arguments":{"type":"decision","title":"Signal drain receipt","do":"Finish admitted writes during restart"}}}`
+			body := mcpDrainWritePayload("Signal drain receipt")
 			if _, err := fmt.Fprintf(conn, "POST /mcp HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nExpect: 100-continue\r\n\r\n", addr, len(body)); err != nil {
 				t.Fatal(err)
 			}

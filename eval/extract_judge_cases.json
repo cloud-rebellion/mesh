@@ -1,29 +1,374 @@
 {
-  "_doc": "Labeled candidates for the extraction judge-panel discrimination benchmark (mesh extract --judge-eval). 'keep' cases are real durable, non-obvious, reusable learnings the panel SHOULD keep; 'reject' cases are obvious, one-off, generic, or transient notes it SHOULD reject. Measures whether the panel discriminates, not just its keep-rate on already-good extractions.",
+  "_doc": "Purpose-specific rewrite of the original 23 judge-panel cases. Original titles, keep/reject labels, confidence and mechanisms are preserved. Historical claims are benchmark data, not verified current product knowledge. The former idempotency post-mortem lacks an incident account and is a troubleshooting pattern. Metrics are not comparable to the shorthand corpus until this version is rebaselined.",
   "cases": [
-    {"label": "keep", "type": "gotcha", "title": "pgtype.Text{} is NULL not empty string, breaks $1='' filters", "do": "filter with IS NULL or a sentinel, not $1=''", "dont": "assume an unset text column equals ''", "why": "pgtype.Text{} marshals to NULL, so $1='' never matches it", "confidence": "high"},
-    {"label": "keep", "type": "decision", "title": "Mollie webhooks are unsigned, re-fetch the payment by id", "do": "on webhook, GET /v2/payments/{id} and trust that, never the body", "dont": "grant anything from the webhook body or metadata", "why": "the callback carries no HMAC, so a forged body could self-upgrade an account", "confidence": "high"},
-    {"label": "keep", "type": "gotcha", "title": "SSRF denylist must include 100.64.0.0/10 (Tailscale CGNAT)", "do": "reject the CGNAT range on the resolved connect IP per hop", "dont": "validate only the submitted URL and follow redirects blindly", "why": "a public URL can 302 to a tailnet host and the fetcher returns its body", "confidence": "high"},
-    {"label": "keep", "type": "gotcha", "title": "Broken YAML frontmatter silently drops a note from the index", "do": "keep colon-space values quoted; surface parse errors at index time", "dont": "assume a .md file is indexed just because it exists", "why": "ParseFiles skips unparseable notes with no warning, hiding them from search", "confidence": "high"},
-    {"label": "keep", "type": "gotcha", "title": "Go base64-encodes []byte in JSON responses", "do": "use json.RawMessage for JSONB columns or convert before serializing", "dont": "return a []byte field and expect raw JSON", "why": "encoding/json emits base64 for []byte, corrupting JSONB round-trips", "confidence": "high"},
-    {"label": "keep", "type": "gotcha", "title": "SQLite WAL never truncates itself, journal_size_limit caps it", "do": "set journal_size_limit and run a TRUNCATE checkpoint on clean shutdown", "dont": "rely on passive autocheckpoint to shrink the WAL file", "why": "passive checkpoint resets the write pointer but never shrinks the file", "confidence": "high"},
-    {"label": "keep", "type": "gotcha", "title": "chi RealIP trusts X-Forwarded-For from any upstream", "do": "bound RealIP to the trusted proxy CIDR before rate-limiting on it", "dont": "key a rate limit off RealIP while it trusts XFF from anyone", "why": "an unbounded RealIP lets a client spoof its source IP", "confidence": "high"},
-    {"label": "keep", "type": "decision", "title": "Extraction judge must be a different model than the extractor", "do": "grade precision with an independent model (MESH_JUDGE_*)", "dont": "let the extractor judge its own output", "why": "a self-grade rubber-stamps its own candidates and reports ~100%", "confidence": "high"},
-    {"label": "keep", "type": "gotcha", "title": "em dashes in a value break sqlc code generation", "do": "author SQL and comments without em dashes", "dont": "paste an em dash into a query or migration", "why": "the sqlc pipeline chokes on the character and fails generation", "confidence": "med"},
-    {"label": "keep", "type": "decision", "title": "Empty string for an optional FK violates the constraint", "do": "use a nil/skip-empty helper for optional foreign keys", "dont": "write '' for an absent FK value", "why": "'' is not a valid referenced key, so the insert fails the constraint", "confidence": "high"},
-    {"label": "keep", "type": "gotcha", "title": "docker network removal breaks legacy composes that still attach to it", "do": "check what still references a docker network before removing it", "dont": "rm a shared network because one stack retired", "why": "other composes declare it external and fail to start once it is gone", "confidence": "med"},
-    {"label": "keep", "type": "post-mortem", "title": "Webhook idempotency by a mutable status flag is replayable", "do": "gate the grant on a UNIQUE(payment_id) INSERT rowsAffected", "dont": "check-then-set a boolean or trust an active status for exactly-once", "why": "a replayed webhook re-runs effects when the guard is a mutable flag", "confidence": "high"},
-
-    {"label": "reject", "type": "gotcha", "title": "Fixed the login redirect bug", "do": "check the redirect path", "dont": "leave it broken", "why": "it was broken in this session", "confidence": "low"},
-    {"label": "reject", "type": "decision", "title": "Use environment variables for secrets", "do": "put secrets in env vars", "dont": "hardcode secrets", "why": "hardcoding is insecure", "confidence": "med"},
-    {"label": "reject", "type": "gotcha", "title": "The prod container was stale so I restarted it", "do": "restart it", "dont": "leave it stale", "why": "it was stale once", "confidence": "low"},
-    {"label": "reject", "type": "decision", "title": "Refactored the handler into smaller functions", "do": "split large functions", "dont": "write huge functions", "why": "smaller functions are cleaner", "confidence": "low"},
-    {"label": "reject", "type": "gotcha", "title": "Added a test for the new endpoint", "do": "write tests", "dont": "skip tests", "why": "tests are good", "confidence": "med"},
-    {"label": "reject", "type": "decision", "title": "Ran go mod tidy to clean up dependencies", "do": "run go mod tidy", "dont": "leave stale deps", "why": "it cleaned the go.mod", "confidence": "low"},
-    {"label": "reject", "type": "gotcha", "title": "The deploy succeeded this time", "do": "deploy", "dont": "not deploy", "why": "it worked", "confidence": "low"},
-    {"label": "reject", "type": "decision", "title": "Use meaningful variable names", "do": "name variables clearly", "dont": "use x and y", "why": "clear names help readability", "confidence": "med"},
-    {"label": "reject", "type": "gotcha", "title": "Commented out the debug log line", "do": "remove debug logs", "dont": "ship debug logs", "why": "it was noisy", "confidence": "low"},
-    {"label": "reject", "type": "decision", "title": "Updated the README with the new command", "do": "update the README", "dont": "leave docs stale", "why": "docs should match the code", "confidence": "low"},
-    {"label": "reject", "type": "gotcha", "title": "Bumped the version number for the release", "do": "bump the version", "dont": "forget to bump", "why": "the release needed a new version", "confidence": "low"}
-  ]
+    {
+      "label": "keep",
+      "type": "gotcha",
+      "template": "troubleshooting",
+      "template_version": 1,
+      "title": "pgtype.Text{} is NULL not empty string, breaks $1='' filters",
+      "summary": "pgtype.Text{} is NULL not empty string, breaks $1='' filters",
+      "sections": {
+        "symptoms": "An unset pgtype.Text value does not match a filter that tests $1=''.",
+        "diagnosis": "Distinguish a NULL parameter from the empty string when interpreting the filter.",
+        "cause": "The original case states that pgtype.Text{} marshals to NULL, so the equality predicate never matches it.",
+        "remedy": "Use IS NULL or an explicit sentinel for the intended unset-value behavior.",
+        "verification": "The historical case gives the mechanism but no current test run or driver revision; those remain unverified."
+      },
+      "confidence": "high"
+    },
+    {
+      "label": "keep",
+      "type": "decision",
+      "template": "decision",
+      "template_version": 1,
+      "title": "Mollie webhooks are unsigned, re-fetch the payment by id",
+      "summary": "Mollie webhooks are unsigned, re-fetch the payment by id",
+      "sections": {
+        "context": "The callback is used to decide whether a payment authorizes an account grant.",
+        "options": "The case contrasts trusting the webhook body or metadata with retrieving the payment by its ID. It states that no callback HMAC is available.",
+        "decision": "Retrieve GET /v2/payments/{id} before granting anything, and base the grant on that payment record.",
+        "rationale": "The original evidence states that an unsigned callback can be forged to self-upgrade an account.",
+        "consequences": "The grant depends on a payment lookup rather than untrusted callback claims. Provider behavior and the actual integration revision need rechecking before reuse."
+      },
+      "confidence": "high"
+    },
+    {
+      "label": "keep",
+      "type": "gotcha",
+      "template": "troubleshooting",
+      "template_version": 1,
+      "title": "SSRF denylist must include 100.64.0.0/10 (Tailscale CGNAT)",
+      "summary": "SSRF denylist must include 100.64.0.0/10 (Tailscale CGNAT)",
+      "sections": {
+        "symptoms": "A submitted public URL can redirect to a tailnet host, causing the fetcher to return an internal response.",
+        "diagnosis": "Evaluate the resolved connection IP on every redirect hop, including the 100.64.0.0/10 CGNAT range.",
+        "cause": "The historical case identifies redirect-following and validation of only the initial URL as the bypass mechanism.",
+        "remedy": "Reject the CGNAT range on the actual resolved connection address for each hop.",
+        "verification": "No current redirect test, DNS setup or network topology is supplied by this fixture."
+      },
+      "confidence": "high"
+    },
+    {
+      "label": "keep",
+      "type": "gotcha",
+      "template": "troubleshooting",
+      "template_version": 1,
+      "title": "Broken YAML frontmatter silently drops a note from the index",
+      "summary": "Broken YAML frontmatter silently drops a note from the index",
+      "sections": {
+        "symptoms": "A Markdown note exists on disk but is absent from search and the graph.",
+        "diagnosis": "Check frontmatter parsing, including unquoted values containing colon-space, and surface indexing parse errors.",
+        "cause": "The original case reports that ParseFiles skipped unparseable notes without warning. This is historical evidence, not a statement about the current implementation.",
+        "remedy": "Quote affected YAML values and report parse failures during indexing.",
+        "verification": "The original case includes no current parser revision or repaired-note retrieval result."
+      },
+      "confidence": "high"
+    },
+    {
+      "label": "keep",
+      "type": "gotcha",
+      "template": "troubleshooting",
+      "template_version": 1,
+      "title": "Go base64-encodes []byte in JSON responses",
+      "summary": "Go base64-encodes []byte in JSON responses",
+      "sections": {
+        "symptoms": "A JSONB value returned through a []byte response field becomes a base64 string rather than raw JSON.",
+        "diagnosis": "Check the Go field type used by encoding/json at the serialization boundary.",
+        "cause": "The case states that encoding/json base64-encodes []byte values, changing JSONB round-trip behavior.",
+        "remedy": "Use json.RawMessage for JSON content or convert it deliberately before serialization.",
+        "verification": "No concrete payload round-trip or application revision accompanies the original fixture."
+      },
+      "confidence": "high"
+    },
+    {
+      "label": "keep",
+      "type": "gotcha",
+      "template": "troubleshooting",
+      "template_version": 1,
+      "title": "SQLite WAL never truncates itself, journal_size_limit caps it",
+      "summary": "SQLite WAL never truncates itself, journal_size_limit caps it",
+      "sections": {
+        "symptoms": "A SQLite WAL file remains large after passive checkpointing.",
+        "diagnosis": "Distinguish resetting the write position from shrinking the file on disk.",
+        "cause": "The original case states that passive checkpointing resets the write pointer without shrinking the WAL file.",
+        "remedy": "Set journal_size_limit and use a TRUNCATE checkpoint at clean shutdown in the applicable setup.",
+        "verification": "The fixture supplies no workload, active-reader state or measured WAL sizes; the title's broad claim is retained as historical benchmark input."
+      },
+      "confidence": "high"
+    },
+    {
+      "label": "keep",
+      "type": "gotcha",
+      "template": "troubleshooting",
+      "template_version": 1,
+      "title": "chi RealIP trusts X-Forwarded-For from any upstream",
+      "summary": "chi RealIP trusts X-Forwarded-For from any upstream",
+      "sections": {
+        "symptoms": "A client can spoof the source IP used for rate limiting through X-Forwarded-For.",
+        "diagnosis": "Check which upstream sources the chi RealIP configuration trusts before using its result as a rate-limit identity.",
+        "cause": "The case attributes the spoofing mechanism to accepting XFF from any upstream.",
+        "remedy": "Restrict proxy trust to the configured trusted proxy CIDR before rate limiting on the derived IP.",
+        "verification": "No current middleware revision, trusted-proxy configuration or spoofing test result is supplied."
+      },
+      "confidence": "high"
+    },
+    {
+      "label": "keep",
+      "type": "decision",
+      "template": "decision",
+      "template_version": 1,
+      "title": "Extraction judge must be a different model than the extractor",
+      "summary": "Extraction judge must be a different model than the extractor",
+      "sections": {
+        "context": "An extraction benchmark needs to measure whether candidates are useful, rather than whether the extractor approves its own output.",
+        "options": "The original case contrasts self-grading with using an independent model configured through MESH_JUDGE_*.",
+        "decision": "Use an independent model when grading extraction precision.",
+        "rationale": "The original evidence reports that self-grading rubber-stamped the model's own candidates and yielded approximately 100 percent.",
+        "consequences": "The measured precision needs an independent assessment; this fixture provides no new baseline or model comparison."
+      },
+      "confidence": "high"
+    },
+    {
+      "label": "keep",
+      "type": "gotcha",
+      "template": "troubleshooting",
+      "template_version": 1,
+      "title": "em dashes in a value break sqlc code generation",
+      "summary": "em dashes in a value break sqlc code generation",
+      "sections": {
+        "symptoms": "The sqlc code-generation pipeline fails after an em dash appears in a query or migration.",
+        "diagnosis": "Inspect the affected SQL or comments for that character in the pipeline described by the case.",
+        "cause": "The original case reports a pipeline failure on the character, without identifying a sqlc version or the underlying parser cause.",
+        "remedy": "Remove the em dash from SQL and comments in that affected pipeline.",
+        "verification": "The workaround is historical and context-specific; no current reproduction or supported universal rule is established."
+      },
+      "confidence": "med"
+    },
+    {
+      "label": "keep",
+      "type": "decision",
+      "template": "decision",
+      "template_version": 1,
+      "title": "Empty string for an optional FK violates the constraint",
+      "summary": "Empty string for an optional FK violates the constraint",
+      "sections": {
+        "context": "An insert represents an absent optional foreign-key relationship.",
+        "options": "The case contrasts writing an empty string with a nil or skip-empty helper.",
+        "decision": "Represent the absent relationship with a nil or skip-empty helper in this schema.",
+        "rationale": "The original evidence states that the empty string is not a referenced key and violates the foreign-key constraint.",
+        "consequences": "Absence must follow the schema's nullable relationship semantics. The fixture does not identify a particular schema or test run."
+      },
+      "confidence": "high"
+    },
+    {
+      "label": "keep",
+      "type": "gotcha",
+      "template": "troubleshooting",
+      "template_version": 1,
+      "title": "docker network removal breaks legacy composes that still attach to it",
+      "summary": "docker network removal breaks legacy composes that still attach to it",
+      "sections": {
+        "symptoms": "Other Compose stacks fail to start after a shared Docker network is removed.",
+        "diagnosis": "Find remaining Compose references to the network, especially external declarations, before removal.",
+        "cause": "The original case states that other stacks still declared the retired stack's network as external.",
+        "remedy": "Check remaining consumers before removing the shared network.",
+        "verification": "The fixture supplies no network name, current consumer inventory or completed retirement check."
+      },
+      "confidence": "med"
+    },
+    {
+      "label": "keep",
+      "type": "gotcha",
+      "template": "troubleshooting",
+      "template_version": 1,
+      "title": "Webhook idempotency by a mutable status flag is replayable",
+      "summary": "Webhook idempotency by a mutable status flag is replayable",
+      "sections": {
+        "symptoms": "A replayed webhook repeats a grant when idempotency relies on a mutable status flag.",
+        "diagnosis": "Check whether the effect is gated by an atomic unique payment claim or by checking and setting mutable state.",
+        "cause": "The original case identifies the mutable flag as a replayable guard rather than an exactly-once claim.",
+        "remedy": "Gate the grant on the rows affected by a UNIQUE(payment_id) insert.",
+        "verification": "The original case has no incident timeline or impact measurement, so this is classified as a reusable troubleshooting pattern rather than a fabricated incident account."
+      },
+      "confidence": "high"
+    },
+    {
+      "label": "reject",
+      "type": "note",
+      "template": "finding",
+      "template_version": 1,
+      "title": "Fixed the login redirect bug",
+      "summary": "Fixed the login redirect bug",
+      "sections": {
+        "question": "What changed in the login redirect?",
+        "findings": "The login redirect bug was fixed in this session.",
+        "evidence": "The case says only that the redirect was broken and was checked.",
+        "limitations": "No recurring cause or transferable mechanism is supplied.",
+        "next_steps": "Check the redirect path; no reusable result is established."
+      },
+      "confidence": "low"
+    },
+    {
+      "label": "reject",
+      "type": "note",
+      "template": "finding",
+      "template_version": 1,
+      "title": "Use environment variables for secrets",
+      "summary": "Use environment variables for secrets",
+      "sections": {
+        "question": "How should this case store secrets?",
+        "findings": "The case recommends environment variables instead of hardcoding secrets.",
+        "evidence": "Its only rationale is that hardcoding is insecure.",
+        "limitations": "This is a generic practice with no case-specific mechanism or evidence.",
+        "next_steps": "Use environment variables as proposed; no new engineering knowledge follows."
+      },
+      "confidence": "med"
+    },
+    {
+      "label": "reject",
+      "type": "note",
+      "template": "finding",
+      "template_version": 1,
+      "title": "The prod container was stale so I restarted it",
+      "summary": "The prod container was stale so I restarted it",
+      "sections": {
+        "question": "What happened to the production container?",
+        "findings": "The container was stale once and was restarted.",
+        "evidence": "The case reports a single stale-container observation.",
+        "limitations": "No recurring mechanism, cause or verified prevention is established.",
+        "next_steps": "Restarting that container was the task response, not a general rule."
+      },
+      "confidence": "low"
+    },
+    {
+      "label": "reject",
+      "type": "note",
+      "template": "finding",
+      "template_version": 1,
+      "title": "Refactored the handler into smaller functions",
+      "summary": "Refactored the handler into smaller functions",
+      "sections": {
+        "question": "What changed in the handler?",
+        "findings": "The handler was refactored into smaller functions.",
+        "evidence": "The original rationale is only that smaller functions are cleaner.",
+        "limitations": "No behavior, concrete mechanism or reusable trade-off is supplied.",
+        "next_steps": "The refactor is routine task completion."
+      },
+      "confidence": "low"
+    },
+    {
+      "label": "reject",
+      "type": "note",
+      "template": "finding",
+      "template_version": 1,
+      "title": "Added a test for the new endpoint",
+      "summary": "Added a test for the new endpoint",
+      "sections": {
+        "question": "What changed for the new endpoint?",
+        "findings": "A test was added for the endpoint.",
+        "evidence": "The rationale given is that tests are good.",
+        "limitations": "No unusual test mechanism, failure mode or result is provided.",
+        "next_steps": "This records routine work rather than a durable learning."
+      },
+      "confidence": "med"
+    },
+    {
+      "label": "reject",
+      "type": "note",
+      "template": "finding",
+      "template_version": 1,
+      "title": "Ran go mod tidy to clean up dependencies",
+      "summary": "Ran go mod tidy to clean up dependencies",
+      "sections": {
+        "question": "What changed in the dependencies?",
+        "findings": "go mod tidy cleaned the go.mod file.",
+        "evidence": "The case reports only the cleanup action.",
+        "limitations": "No dependency failure, version constraint or transferable mechanism is supplied.",
+        "next_steps": "Run go mod tidy as routine maintenance."
+      },
+      "confidence": "low"
+    },
+    {
+      "label": "reject",
+      "type": "note",
+      "template": "finding",
+      "template_version": 1,
+      "title": "The deploy succeeded this time",
+      "summary": "The deploy succeeded this time",
+      "sections": {
+        "question": "What was observed in the deployment?",
+        "findings": "The deployment succeeded this time.",
+        "evidence": "The case's only evidence is that it worked.",
+        "limitations": "A transient success does not explain a reusable mechanism.",
+        "next_steps": "No durable engineering conclusion is established."
+      },
+      "confidence": "low"
+    },
+    {
+      "label": "reject",
+      "type": "note",
+      "template": "finding",
+      "template_version": 1,
+      "title": "Use meaningful variable names",
+      "summary": "Use meaningful variable names",
+      "sections": {
+        "question": "How should variables be named?",
+        "findings": "The case recommends meaningful variable names rather than x and y.",
+        "evidence": "The rationale is that clear names improve readability.",
+        "limitations": "The proposal is generic and provides no non-obvious mechanism or evidence.",
+        "next_steps": "Apply the ordinary naming practice; no new knowledge is established."
+      },
+      "confidence": "med"
+    },
+    {
+      "label": "reject",
+      "type": "note",
+      "template": "finding",
+      "template_version": 1,
+      "title": "Commented out the debug log line",
+      "summary": "Commented out the debug log line",
+      "sections": {
+        "question": "What changed in logging?",
+        "findings": "A debug log line was commented out because it was noisy.",
+        "evidence": "The case reports the noisy line and its removal.",
+        "limitations": "No logging failure mechanism or reusable distinction is supplied.",
+        "next_steps": "This is a routine edit."
+      },
+      "confidence": "low"
+    },
+    {
+      "label": "reject",
+      "type": "note",
+      "template": "finding",
+      "template_version": 1,
+      "title": "Updated the README with the new command",
+      "summary": "Updated the README with the new command",
+      "sections": {
+        "question": "What changed in the documentation?",
+        "findings": "The README was updated with a new command.",
+        "evidence": "The rationale is that documentation should match the code.",
+        "limitations": "No command-specific discovery, failure mode or evidence is supplied.",
+        "next_steps": "This is routine documentation maintenance."
+      },
+      "confidence": "low"
+    },
+    {
+      "label": "reject",
+      "type": "note",
+      "template": "finding",
+      "template_version": 1,
+      "title": "Bumped the version number for the release",
+      "summary": "Bumped the version number for the release",
+      "sections": {
+        "question": "What changed for the release?",
+        "findings": "The version number was bumped because the release needed a new version.",
+        "evidence": "The case reports only that release action.",
+        "limitations": "No versioning constraint, release failure or reusable mechanism is provided.",
+        "next_steps": "This is routine release preparation."
+      },
+      "confidence": "low"
+    }
+  ],
+  "format_version": 2
 }

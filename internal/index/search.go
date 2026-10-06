@@ -149,7 +149,7 @@ SELECT si.node_id, si.title,
        bm25(search_index)
 FROM search_index si
 LEFT JOIN notes n ON n.id = substr(si.node_id, 6)
-WHERE search_index MATCH ?` + scopeSQL + `
+WHERE search_index MATCH ?` + scopeSQL + draftPredicate + `
 ORDER BY mesh_full_title_match(?, n.title) DESC, bm25(search_index), si.node_id`
 	args := make([]any, 0, len(scopeArgs)+3)
 	args = append(args, match)

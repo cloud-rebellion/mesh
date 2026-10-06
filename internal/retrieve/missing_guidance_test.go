@@ -42,10 +42,10 @@ func TestMissingGuidanceCurrentCardsAndDocuments(t *testing.T) {
 		want               []string
 	}{
 		{"complete", "decision", complete, nil},
-		{"empty", "gotcha", "", []string{"do", "dont", "why"}},
-		{"placeholders", "post-mortem", "do: '  todo: fill this  '\ndont: '\u2003'\nwhy: TODO\n", []string{"do", "dont", "why"}},
-		{"partial", "decision", "do: todos are recorded\ndont: Avoid guesses\nwhy: TODO\n", []string{"why"}},
-		{"comment only", "decision", "do: '<!-- pending -->'\ndont: Avoid guesses\nwhy: Evidence matters\n", []string{"do"}},
+		{"empty historical note", "gotcha", "", nil},
+		{"placeholders", "post-mortem", "do: '  todo: fill this  '\ndont: '\u2003'\nwhy: TODO\n", []string{"legacy do contains an unfilled placeholder", "legacy dont contains an unfilled placeholder", "legacy why contains an unfilled placeholder"}},
+		{"partial", "decision", "do: todos are recorded\ndont: Avoid guesses\nwhy: TODO\n", []string{"legacy why contains an unfilled placeholder"}},
+		{"comment only", "decision", "do: '<!-- pending -->'\ndont: Avoid guesses\nwhy: Evidence matters\n", []string{"legacy do contains an unfilled placeholder"}},
 		{"ordinary note", "note", "", nil},
 		{"entity", "entity", "", nil},
 	} {
@@ -109,7 +109,7 @@ func TestMissingGuidanceCurrentCardsAndDocuments(t *testing.T) {
 
 func TestMissingGuidanceSurvivesRerankingAndCompactBudgets(t *testing.T) {
 	r := buildVaultFrom(t, []noteSrc{
-		guidanceSource("decision", "", "public"),
+		guidanceSource("decision", "do: TODO\ndont: TODO\nwhy: TODO\n", "public"),
 		{"other.md", "---\nid: other\ntype: note\n---\n# Guidanceneedle other\nUnrelated history\n"},
 	})
 	r.EnableRerank(fakeReranker{needle: "some historical"})
@@ -121,7 +121,7 @@ func TestMissingGuidanceSurvivesRerankingAndCompactBudgets(t *testing.T) {
 	if c.NoteID != "guidance" || !strings.Contains(c.Reason, "reranked") {
 		t.Fatalf("did not exercise reranked incomplete head: %+v", cards)
 	}
-	want := []string{"do", "dont", "why"}
+	want := []string{"legacy do contains an unfilled placeholder", "legacy dont contains an unfilled placeholder", "legacy why contains an unfilled placeholder"}
 	assertMissingGuidance(t, c, want)
 	c.Snippet = strings.Repeat("Long snippet with context. ", 100)
 	c.SupersededBy = "replacement"

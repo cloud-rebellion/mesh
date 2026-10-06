@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/bright-interaction/mesh/internal/index"
+	"github.com/bright-interaction/mesh/internal/vault"
 )
 
 func TestPendingPromoteFinishesIndexingAfterClientCancellation(t *testing.T) {
@@ -28,7 +29,7 @@ func TestPendingPromoteFinishesIndexingAfterClientCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	p := index.PendingNote{Type: "gotcha", Title: "Finish after disconnect", Do: "keep indexing"}
+	p := completePending("Finish after disconnect")
 	if err := s.store.AddPending(p); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,7 @@ func TestPendingPromoteQueuesCleanupWhenShutdownFollowsFileCreation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := index.PendingNote{Type: "gotcha", Title: "Clean up after shutdown", Do: "do not duplicate"}
+	p := completePending("Clean up after shutdown")
 	if err := s.store.AddPending(p); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +139,7 @@ func TestPendingPromoteAndDiscard(t *testing.T) {
 	// writer, so this exercises the production shape: a read-only viewer in front of a
 	// live owner.
 	seedPending(t, dir,
-		index.PendingNote{Type: "gotcha", Title: "Keep me", Do: "do x", Dont: "dont y", Why: "because"},
+		completePending("Keep me"),
 		index.PendingNote{Type: "decision", Title: "Toss me"},
 	)
 	runOwner(t, dir)
@@ -186,5 +187,220 @@ func TestPendingPromoteAndDiscard(t *testing.T) {
 	// Unknown id is a clean 404, not a 500.
 	if st, _ := postJSON(t, ts, "/api/pending/promote", `{"id":"nope"}`); st != 404 {
 		t.Fatalf("promote unknown = %d, want 404", st)
+	}
+}
+
+func completePending(title string) index.PendingNote {
+	template, _ := vault.TemplateFor("troubleshooting", 1)
+	sections := map[string]string{}
+	for _, s := range template.Sections {
+		sections[s.Key] = "Fixture observation and bounded verification, explicitly synthetic."
+	}
+	return index.PendingNote{Type: "gotcha", Title: title, Template: "troubleshooting", TemplateVersion: 1, Summary: "The fixture verifies pending publication bookkeeping.", Sections: sections}
+}
+
+func TestPendingPromotionRejectsIncompleteAndHistoricalDrafts(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewOwningServer(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, p := range []index.PendingNote{
+		{Type: "note", Title: "Incomplete modern draft", Template: "finding", TemplateVersion: 1, Summary: "A bounded observation."},
+		{Type: "gotcha", Title: "Historical shorthand", Do: "original words", Why: "original evidence"},
+	} {
+		if err := s.store.AddPending(p); err != nil {
+			t.Fatal(err)
+		}
+		id := index.PendingID(p.Type, p.Title)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/pending/promote", strings.NewReader(`{"id":"`+id+`"}`)))
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("incomplete promote=%d %s", rec.Code, rec.Body.String())
+		}
+		if _, err := s.store.GetPending(id); err != nil {
+			t.Fatalf("draft lost after rejection: %v", err)
+		}
+		files, _ := vault.Walk(dir)
+		if len(files) != 0 {
+			t.Fatalf("incomplete draft published: %v", files)
+		}
+	}
+}
+
+func TestPendingPromotionRechecksReferenceAudienceAndCurrentScope(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target.md")
+	if err := os.WriteFile(path, []byte("---\nid: target\ntype: entity\nwhen: 2026-01-01\nscope: [dev]\n---\n# Target\nVisible baseline.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewOwningServer(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	p := completePending("Scope drift must block publication")
+	p.Related = []string{"target"}
+	if err := s.store.AddPending(p); err != nil {
+		t.Fatal(err)
+	}
+	// Change only the file, leaving a readable dev target in the stale index.
+	if err := os.WriteFile(path, []byte("---\nid: target\ntype: entity\nwhen: 2026-01-01\nscope: [ops]\n---\n# Target\nPrivate operational content.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := index.PendingID(p.Type, p.Title)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/pending/promote", strings.NewReader(`{"id":"`+id+`"}`)))
+	if rec.Code != http.StatusUnprocessableEntity || strings.Contains(rec.Body.String(), "target") {
+		t.Fatalf("scope drift=%d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := s.store.GetPending(id); err != nil {
+		t.Fatalf("rejected queue item lost: %v", err)
+	}
+}
+
+func TestPendingPromotionCannotBroadenFolderAudienceForAdmin(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewOwningServer(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	p := completePending("Folder audience must remain bounded")
+	if err := s.store.AddPending(p); err != nil {
+		t.Fatal(err)
+	}
+	s.SetMemberAuth(
+		func(token string) (int64, string, bool) { return 1, "admin", token == "admin" },
+		func(int64) map[string]bool { return map[string]bool{"dev": true} },
+		func(id int64) func(string) bool {
+			if id == 1 {
+				return func(string) bool { return true }
+			}
+			return func(path string) bool { return !strings.HasPrefix(path, "private/") }
+		},
+		func(int64) (string, int64, bool) { return "admin", 1, true },
+	)
+	id := index.PendingID(p.Type, p.Title)
+	request := httptest.NewRequest(http.MethodPost, "/api/pending/promote", strings.NewReader(`{"id":"`+id+`"}`))
+	request.Header.Set("Authorization", "Bearer admin")
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("unproven admin publication=%d %s", response.Code, response.Body.String())
+	}
+	if _, err := s.store.GetPending(id); err != nil {
+		t.Fatalf("guard lost pending work: %v", err)
+	}
+	files, _ := vault.Walk(dir)
+	if len(files) != 0 {
+		t.Fatal("folder guard published a note")
+	}
+}
+
+func TestPendingPromotionChecksWikiReferencesInAllAuthoredProse(t *testing.T) {
+	for _, where := range []string{"summary", "section", "block"} {
+		t.Run(where, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "private-target.md"), []byte("---\nid: private-target\ntype: entity\nwhen: 2026-01-01\nscope: [ops]\n---\n# Private target\nPrivate operational material.\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			s, err := NewOwningServer(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			p := completePending("Wiki reference audience " + where)
+			switch where {
+			case "summary":
+				p.Summary = "A reference to [[private-target]] is private."
+			case "section":
+				p.Sections["cause"] = "The context refers to [[private-target]]."
+			case "block":
+				template, _ := vault.BlockTemplateFor("evidence", 1)
+				fields := map[string]string{}
+				for _, field := range template.Fields {
+					fields[field.Key] = "Synthetic fixture context, explicitly unverified."
+				}
+				fields["claim"] = "This claim references [[private-target]]."
+				p.Blocks = []vault.BlockSpec{{Template: "evidence", Version: 1, ID: "scope-evidence", Fields: fields}}
+			}
+			spec, err := p.AuthoringSpec()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := vault.ValidateSpec(spec); err != nil {
+				t.Fatalf("fixture incomplete before reference check: %v", err)
+			}
+			if err := s.store.AddPending(p); err != nil {
+				t.Fatal(err)
+			}
+			id := index.PendingID(p.Type, p.Title)
+			response := httptest.NewRecorder()
+			s.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/pending/promote", strings.NewReader(`{"id":"`+id+`"}`)))
+			if response.Code != http.StatusUnprocessableEntity || strings.Contains(response.Body.String(), "private-target") {
+				t.Fatalf("wiki audience=%d %s", response.Code, response.Body.String())
+			}
+			if _, err := s.store.GetPending(id); err != nil {
+				t.Fatalf("rejected item lost: %v", err)
+			}
+		})
+	}
+}
+
+// A hub installs its path provider for all teams; the provider returns nil when
+// no folder ACL rules exist. Provider presence alone must not disable publication.
+func TestPendingPromotionWithMemberProviderAndNoFolderRules(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewOwningServer(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	p := completePending("Team without folder rules can publish")
+	if err := s.store.AddPending(p); err != nil {
+		t.Fatal(err)
+	}
+	s.SetMemberAuth(func(token string) (int64, string, bool) { return 1, "admin", token == "admin" }, func(int64) map[string]bool { return map[string]bool{"dev": true} }, func(int64) func(string) bool { return nil }, func(int64) (string, int64, bool) { return "admin", 1, true })
+	id := index.PendingID(p.Type, p.Title)
+	req := httptest.NewRequest(http.MethodPost, "/api/pending/promote", strings.NewReader(`{"id":"`+id+`"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("publication rejected without folder rules: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := s.store.GetPending(id); err == nil {
+		t.Fatal("published candidate retained in pending queue")
+	}
+	files, _ := vault.Walk(dir)
+	if len(files) != 1 {
+		t.Fatalf("publication created %d files", len(files))
+	}
+}
+
+func TestPendingPromotionDoesNotInferBreakGlassAudienceFromNilFilter(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewOwningServer(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	p := completePending("Break-glass cannot bypass folder audience checks")
+	if err := s.store.AddPending(p); err != nil {
+		t.Fatal(err)
+	}
+	s.SetMemberAuth(func(token string) (int64, string, bool) { return -1, "admin", token == "shared" }, func(int64) map[string]bool { return nil }, func(int64) func(string) bool { return nil }, func(int64) (string, int64, bool) { return "admin", 0, true })
+	id := index.PendingID(p.Type, p.Title)
+	req := httptest.NewRequest(http.MethodPost, "/api/pending/promote", strings.NewReader(`{"id":"`+id+`"}`))
+	req.Header.Set("Authorization", "Bearer shared")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("break-glass published without audience proof: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := s.store.GetPending(id); err != nil {
+		t.Fatal("guard lost pending work")
 	}
 }

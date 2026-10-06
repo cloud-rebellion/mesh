@@ -4,6 +4,7 @@
 package vault
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -78,7 +79,7 @@ func TestMigrateFileNoFrontmatter(t *testing.T) {
 	}
 }
 
-func TestMigrateReportsFlywheelTODOs(t *testing.T) {
+func TestMigrateDoesNotRequireAbsentLegacyTriad(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "some-decision.md")
 	if err := os.WriteFile(p, []byte("---\nid: some-decision\ntype: decision\nwhen: 2026-01-01\n---\n# D\n"), 0o644); err != nil {
@@ -91,8 +92,28 @@ func TestMigrateReportsFlywheelTODOs(t *testing.T) {
 	if res.Changed {
 		t.Error("already-keyed file should not change")
 	}
-	if len(res.Issues) != 3 {
-		t.Errorf("expected 3 flywheel issues for a decision missing do/dont/why, got %v", res.Issues)
+	if len(res.Issues) != 0 {
+		t.Errorf("absent legacy triad is not an authoring requirement: %v", res.Issues)
+	}
+}
+
+func TestMigrateReportsExplicitLegacyPlaceholders(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "placeholder.md")
+	content := "---\nid: placeholder\ntype: decision\nwhen: 2026-01-01\ndo: TODO\ndont: '<!-- pending -->'\nwhy: TODO\n---\n# Historical placeholders\n"
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := MigrateFile(dir, p, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Issues) != 3 || res.Changed {
+		t.Fatalf("explicit historical placeholders not reported losslessly: %+v", res)
+	}
+	after, _ := os.ReadFile(p)
+	if string(after) != content {
+		t.Fatal("report-only historical check changed content")
 	}
 }
 
@@ -204,186 +225,29 @@ func TestBackfillRelatedFile(t *testing.T) {
 	}
 }
 
-func TestBackfillBodyFile(t *testing.T) {
-	const authored = "---\nid: g\ntype: gotcha\ntitle: G\ndo: RUN-THIS\ndont: AVOID-THIS\nwhy: BECAUSE\n---\n\n# G\n\n" +
-		"## Symptom\n<!-- TODO: how the problem shows up -->\n\n" +
-		"## Cause\n<!-- TODO: the root cause -->\n\n" +
-		"## Fix\n<!-- TODO: the resolution or workaround -->\n"
-
-	t.Run("fills TODO sections from frontmatter", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "n.md")
-		os.WriteFile(p, []byte(authored), 0o644)
-		res, err := BackfillBodyFile(p, false)
-		if err != nil || !res.Changed {
-			t.Fatalf("Changed=%v err=%v", res.Changed, err)
+// Neither dry-run nor apply may project shorthand into unsupported cause or impact.
+func TestRetiredBodyBackfillPreservesOriginal(t *testing.T) {
+	for _, typ := range []string{"post-mortem", "gotcha", "decision", "entity", "note"} {
+		for _, dryRun := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/dry=%v", typ, dryRun), func(t *testing.T) {
+				original := "---\nid: original\ntype: " + typ + "\ntitle: Historical note\ndont: Avoid an untested deployment.\nwhy: The source does not establish the incident cause.\n---\n# Historical note\n## Impact\n<!-- TODO -->\n## Root cause\n<!-- TODO -->\n"
+				path := filepath.Join(t.TempDir(), "note.md")
+				if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				res, err := BackfillBodyFile(path, dryRun)
+				if err == nil || !strings.Contains(err.Error(), "migration-preview") || res.Changed {
+					t.Fatalf("retired writer did not refuse: %+v %v", res, err)
+				}
+				got, err := os.ReadFile(path)
+				if err != nil || string(got) != original {
+					t.Fatalf("unreviewed content changed: %q %v", got, err)
+				}
+				info, _ := os.Stat(path)
+				if info.Mode().Perm() != 0o600 {
+					t.Fatal("retired writer altered access")
+				}
+			})
 		}
-		out, _ := os.ReadFile(p)
-		for _, want := range []string{"RUN-THIS", "AVOID-THIS", "BECAUSE"} {
-			if !strings.Contains(string(out), want) {
-				t.Errorf("body missing %q:\n%s", want, out)
-			}
-		}
-		// The frontmatter copy must survive: retrieval reads do/dont/why from there.
-		fmStr, _, had := SplitFrontmatter(string(out))
-		if !had || !strings.Contains(fmStr, "do:") {
-			t.Errorf("frontmatter lost its fields, retrieval cards would degrade:\n%s", out)
-		}
-	})
-
-	t.Run("is idempotent", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "n.md")
-		os.WriteFile(p, []byte(authored), 0o644)
-		BackfillBodyFile(p, false)
-		first, _ := os.ReadFile(p)
-		res, _ := BackfillBodyFile(p, false)
-		second, _ := os.ReadFile(p)
-		if res.Changed || string(first) != string(second) {
-			t.Errorf("second run changed the file (Changed=%v)", res.Changed)
-		}
-	})
-
-	t.Run("never overwrites an authored section", func(t *testing.T) {
-		src := strings.Replace(authored, "## Fix\n<!-- TODO: the resolution or workaround -->", "## Fix\nHUMAN-WROTE-THIS", 1)
-		p := filepath.Join(t.TempDir(), "n.md")
-		os.WriteFile(p, []byte(src), 0o644)
-		BackfillBodyFile(p, false)
-		out, _ := os.ReadFile(p)
-		// Scope the check to the BODY: `do: RUN-THIS` legitimately stays in the
-		// frontmatter, so asserting over the whole file would fail on the copy we
-		// deliberately keep.
-		_, body, _ := SplitFrontmatter(string(out))
-		if !strings.Contains(body, "HUMAN-WROTE-THIS") {
-			t.Errorf("lost the authored section:\n%s", body)
-		}
-		if strings.Contains(body, "RUN-THIS") {
-			t.Errorf("overwrote the authored Fix section with the `do` field:\n%s", body)
-		}
-	})
-
-	t.Run("refuses a note with no frontmatter", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "n.md")
-		os.WriteFile(p, []byte("# no frontmatter\n"), 0o644)
-		if _, err := BackfillBodyFile(p, false); err == nil {
-			t.Error("expected an error for a note with no frontmatter block")
-		}
-	})
-}
-
-// TestBackfillBodyFileRepairsReferencePages covers the shape that produced 18 dead bodies
-// in the live vault: an agent writes an entity through mesh_write_entity, the page's whole
-// substance lands in frontmatter `why`, and the body stays a TODO skeleton whose Related
-// section DESCRIBES the links instead of listing them. Nothing was empty, so lint stayed
-// at zero notices and nothing ever pointed at them.
-func TestBackfillBodyFileRepairsReferencePages(t *testing.T) {
-	entity := "---\nid: e\ntype: entity\ntitle: E\nrelated:\n  - other-note\nwhy: WHAT-THIS-IS\n---\n\n# E\n\n" + tmplEntity
-
-	t.Run("fills an entity from why and renders its links", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "e.md")
-		os.WriteFile(p, []byte(entity), 0o644)
-		res, err := BackfillBodyFile(p, false)
-		if err != nil || !res.Changed {
-			t.Fatalf("Changed=%v err=%v", res.Changed, err)
-		}
-		out, _ := os.ReadFile(p)
-		_, body, _ := SplitFrontmatter(string(out))
-		if !strings.Contains(body, "## What it does\nWHAT-THIS-IS") {
-			t.Errorf("entity body did not take its prose from why:\n%s", body)
-		}
-		if !strings.Contains(body, "- [[other-note]]") {
-			t.Errorf("entity Related still describes its links instead of listing them:\n%s", body)
-		}
-		// Sections with no field behind them are DROPPED on an authored page, not filled
-		// with a guess and not left as an empty prompt. (This assertion used to require the
-		// prompt to survive. It was changed deliberately: on an agent-written page nothing
-		// ever comes back to fill it, so the prompt is a permanently empty section rather
-		// than an invitation. A human's `mesh new` scaffold, which has no why, still keeps
-		// every prompt: see "leaves an unauthored scaffold completely alone".)
-		for _, gone := range []string{"## How it works", "## Key facts"} {
-			if strings.Contains(body, gone) {
-				t.Errorf("%q survived on an authored page with nothing to fill it:\n%s", gone, body)
-			}
-		}
-	})
-
-	t.Run("create-time and repair-time agree", func(t *testing.T) {
-		// The two paths had no reason to produce the same bytes, and a projection that
-		// only ran at create time is why the live pages never healed.
-		fm := &Frontmatter{ID: "e", Type: TypeEntity, Title: "E", Why: "WHAT-THIS-IS", Related: StringList{"other-note"}}
-		created := renderBody(fm)
-
-		p := filepath.Join(t.TempDir(), "e.md")
-		os.WriteFile(p, []byte(entity), 0o644)
-		BackfillBodyFile(p, false)
-		out, _ := os.ReadFile(p)
-		_, withTitle, _ := SplitFrontmatter(string(out))
-		// SplitFrontmatter's body keeps the "# Title" heading; renderBody starts below it.
-		repaired := strings.TrimPrefix(strings.TrimSpace(withTitle), "# E")
-
-		if strings.TrimSpace(created) != strings.TrimSpace(repaired) {
-			t.Errorf("create-time and repair-time bodies differ:\ncreated:\n%s\nrepaired:\n%s", created, repaired)
-		}
-	})
-
-	t.Run("fills a plain note from why/do/dont", func(t *testing.T) {
-		note := "---\nid: n\ntype: note\ntitle: N\ndo: DO-THIS\ndont: NOT-THIS\nwhy: BECAUSE\n---\n\n# N\n\n" + tmplNote
-		p := filepath.Join(t.TempDir(), "n.md")
-		os.WriteFile(p, []byte(note), 0o644)
-		if _, err := BackfillBodyFile(p, false); err != nil {
-			t.Fatal(err)
-		}
-		out, _ := os.ReadFile(p)
-		_, body, _ := SplitFrontmatter(string(out))
-		for _, want := range []string{"## Overview\nBECAUSE", "## Do\nDO-THIS", "## Don't\nNOT-THIS"} {
-			if !strings.Contains(body, want) {
-				t.Errorf("note body missing %q:\n%s", want, body)
-			}
-		}
-	})
-
-	t.Run("added sections land before the closing Related list", func(t *testing.T) {
-		// tmplNote ends with Related, so a naive append put the note's own Do and Don't
-		// AFTER its link list: Overview, Related, Do, Don't.
-		note := "---\nid: n\ntype: note\ntitle: N\nrelated:\n  - other-note\ndo: DO-THIS\ndont: NOT-THIS\nwhy: BECAUSE\n---\n\n# N\n\n" + tmplNote
-		p := filepath.Join(t.TempDir(), "n.md")
-		os.WriteFile(p, []byte(note), 0o644)
-		if _, err := BackfillBodyFile(p, false); err != nil {
-			t.Fatal(err)
-		}
-		out, _ := os.ReadFile(p)
-		var order []string
-		for _, line := range strings.Split(string(out), "\n") {
-			if strings.HasPrefix(line, "## ") {
-				order = append(order, strings.TrimPrefix(line, "## "))
-			}
-		}
-		want := []string{"Overview", "Do", "Don't", "Related"}
-		if strings.Join(order, ",") != strings.Join(want, ",") {
-			t.Errorf("section order is %v, want %v:\n%s", order, want, out)
-		}
-	})
-
-	t.Run("is idempotent on a reference page", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "e.md")
-		os.WriteFile(p, []byte(entity), 0o644)
-		BackfillBodyFile(p, false)
-		first, _ := os.ReadFile(p)
-		res, _ := BackfillBodyFile(p, false)
-		second, _ := os.ReadFile(p)
-		if res.Changed || string(first) != string(second) {
-			t.Errorf("second run changed the file (Changed=%v)", res.Changed)
-		}
-	})
-
-	t.Run("leaves an empty scaffold alone", func(t *testing.T) {
-		// `mesh new entity` writes no why at all. There is nothing to project, and
-		// inventing one is the failure this whole area exists to avoid.
-		empty := "---\nid: e\ntype: entity\ntitle: E\n---\n\n# E\n\n" + tmplEntity
-		p := filepath.Join(t.TempDir(), "e.md")
-		os.WriteFile(p, []byte(empty), 0o644)
-		res, _ := BackfillBodyFile(p, false)
-		out, _ := os.ReadFile(p)
-		if res.Changed || string(out) != empty {
-			t.Errorf("an unauthored scaffold must be left exactly as written (Changed=%v)", res.Changed)
-		}
-	})
+	}
 }

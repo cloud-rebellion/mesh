@@ -214,7 +214,7 @@ func TestAppendNoteDoesNotLeakTheVaultRootOnEitherFailure(t *testing.T) {
 			s := spacedRootServerWritable(t)
 			keep := tc.breakIt(t, s)
 			raw, _ := json.Marshal(map[string]any{
-				"type": "gotcha", "title": "Leak check", "do": "a", "dont": "b", "why": "c"})
+				"type": "gotcha", "title": "Leak check", "summary": "Verify publication errors do not disclose the vault location.", "sections": fixtureSections("gotcha")})
 			out, rerr := s.toolWrite(WithLocalOperator(context.Background()), raw, "gotcha")
 
 			var msg string
