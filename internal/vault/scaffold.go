@@ -37,6 +37,9 @@ type NewNoteSpec struct {
 	DraftPath       string            `json:"-"` // internal authorized vault-relative target
 	DraftID         string            `json:"draft_id,omitempty"`
 	DraftRevision   string            `json:"draft_revision,omitempty"`
+	UpdatePath      string            `json:"-"` // internal authorized vault-relative target
+	UpdateID        string            `json:"update_id,omitempty"`
+	UpdateRevision  string            `json:"update_revision,omitempty"`
 	// Deprecated source aliases keep old callers compiling. The modern writer
 	// rejects them; historical content is read through ReadLegacy.
 	Do       string   `json:"do,omitempty"`
@@ -81,6 +84,9 @@ type PreparedNote struct {
 	Content []byte
 	// PreviousPath is populated when resuming or promoting an existing draft.
 	PreviousPath string
+	// OriginalContent is retained before a published-note replacement. Hosted
+	// publishers retain it in Git history; the local publisher archives exact bytes.
+	OriginalContent []byte
 }
 
 type notePlan struct {
@@ -197,6 +203,9 @@ func CreateNote(root string, spec NewNoteSpec) (*CreateResult, error) {
 func CreateNoteContext(ctx context.Context, root string, spec NewNoteSpec) (*CreateResult, error) {
 	if err := RequireAuthoringWrites(); err != nil {
 		return nil, err
+	}
+	if spec.UpdateID != "" {
+		return updateNoteContext(ctx, root, spec)
 	}
 	if spec.DraftID != "" {
 		return resumeDraftContext(ctx, root, spec)
@@ -359,6 +368,9 @@ func createNoteContext(
 // touching the filesystem. See PreparedNote: callers must serialize this with the
 // durable publication that follows it.
 func PrepareNoteContext(ctx context.Context, root string, spec NewNoteSpec) (*PreparedNote, error) {
+	if spec.UpdateID != "" {
+		return prepareUpdateContext(ctx, root, spec)
+	}
 	if spec.DraftID != "" {
 		return prepareDraftContext(ctx, root, spec)
 	}

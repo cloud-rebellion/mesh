@@ -30,6 +30,8 @@ Authoring
 - Read mesh_templates, then mesh_note_template and selected mesh_block_template definitions. Provide a useful Summary and purpose-specific sections. Prose belongs in the body; metadata is generated.
 - Keep template headings fixed. Use paragraphs, unordered or ordered lists, tables and other Markdown inside them as useful; these formatting choices need no approval.
 - mesh_author_note actions prepare/validate/draft/publish share one note format. Validation checks structure and references, not truth. Published notes on existing templates need no approval. Never invent causes, results or owners to satisfy a section.
+- Update notes through mesh_prepare_update and mesh_author_note with update_id/update_revision. Retain evidence/links; reread stale edits. Use linked drafts for incomplete edits. No per-note approval.
+- Link Decision records. Preserve creation provenance; updated records edits. verified_at requires checks for edited content.
 - Use stable note IDs for collections/related/supersedes and wikilinks. Topics reuse tags. Links must be supported and accessible to the note's audience. Formatting dates are not verification dates.
 - mesh_propose_template saves a draft proposal with an example. Only user-approved library changes may be registered; proposals do not activate themselves.
 

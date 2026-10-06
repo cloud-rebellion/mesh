@@ -10,11 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
-	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 type DraftSnapshot struct {
@@ -52,7 +48,11 @@ func DraftSnapshotContext(ctx context.Context, root, id string) (*DraftSnapshot,
 	if err != nil || !had || fm.ID != id || !IsDraft(fm) || fm.Template == "" {
 		return nil, fmt.Errorf("%w: target must be a versioned draft", ErrInvalidSpec)
 	}
-	if fm.Summary != "" || fm.Do != "" || fm.Dont != "" || fm.Why != "" {
+	mixedHistoricalProse := fm.Summary != ""
+	for _, value := range ReadLegacy(fm).Values() {
+		mixedHistoricalProse = mixedHistoricalProse || value != ""
+	}
+	if mixedHistoricalProse {
 		return nil, fmt.Errorf("%w: mixed historical prose requires reviewed migration before draft completion", ErrInvalidSpec)
 	}
 	return &DraftSnapshot{Path: rel, Revision: ContentRevision(data), Content: data, Frontmatter: fm}, nil
@@ -91,44 +91,11 @@ func prepareDraftContext(ctx context.Context, root string, spec NewNoteSpec) (*P
 	// receipt records the authenticated editor independently.
 	plan.fm.Author, plan.fm.Agent, plan.fm.Source = old.Author, old.Agent, old.Source
 	plan.fm.SourceURL, plan.fm.ImportedAt = old.SourceURL, old.ImportedAt
-	content, err := renderNote(plan.fm, spec.By)
+	content, err := renderWithOriginalMetadata(before.Content, plan.fm, spec.By)
 	if err != nil {
 		return nil, err
 	}
-	// Preserve unknown metadata; declared new fields remain authoritative. Legacy
-	// prose cannot appear in a versioned draft written by the modern authoring path.
-	originalHeader, _, _ := SplitFrontmatter(string(before.Content))
-	_, raw, err := ParseFrontmatter([]byte(originalHeader))
-	if err != nil {
-		return nil, err
-	}
-	header, body, _ := SplitFrontmatter(content)
-	_, current, err := ParseFrontmatter([]byte(header))
-	if err != nil {
-		return nil, err
-	}
-	known := map[string]bool{}
-	typ := reflect.TypeOf(Frontmatter{})
-	for i := 0; i < typ.NumField(); i++ {
-		key := strings.Split(typ.Field(i).Tag.Get("yaml"), ",")[0]
-		if key != "" && key != "-" {
-			known[key] = true
-		}
-	}
-	for key, value := range raw {
-		if _, isKnown := known[key]; !isKnown {
-			current[key] = value
-		}
-	}
-	encoded, err := yaml.Marshal(current)
-	if err != nil {
-		return nil, err
-	}
-	content = "---\n" + string(encoded) + "---\n" + body
-	if err := validateRoundTrip(content, old.ID); err != nil {
-		return nil, err
-	}
-	return &PreparedNote{Result: CreateResult{Path: filepath.Join(root, before.Path), ID: old.ID, When: old.When, TODOs: plan.todos, Revision: ContentRevision([]byte(content))}, Content: []byte(content), PreviousPath: before.Path}, nil
+	return &PreparedNote{Result: CreateResult{Path: filepath.Join(root, before.Path), ID: old.ID, When: old.When, TODOs: plan.todos, Revision: ContentRevision(content)}, Content: content, PreviousPath: before.Path}, nil
 }
 
 func resumeDraftContext(ctx context.Context, root string, spec NewNoteSpec) (*CreateResult, error) {

@@ -23,6 +23,8 @@ const authoringMaxBytes = 96 << 10
 type authoringArgs struct {
 	DraftID         string            `json:"draft_id,omitempty"`
 	DraftRevision   string            `json:"draft_revision,omitempty"`
+	UpdateID        string            `json:"update_id,omitempty"`
+	UpdateRevision  string            `json:"update_revision,omitempty"`
 	VerifiedAt      string            `json:"verified_at,omitempty"`
 	Type            string            `json:"type,omitempty"`
 	Title           string            `json:"title"`
@@ -49,7 +51,7 @@ func authoringProperties() map[string]any {
 	str := map[string]any{"type": "string"}
 	list := map[string]any{"type": "array", "items": str, "maxItems": 32}
 	return map[string]any{
-		"type": str, "title": str, "template": str, "draft_id": str, "draft_revision": str, "verified_at": str,
+		"type": str, "title": str, "template": str, "draft_id": str, "draft_revision": str, "update_id": str, "update_revision": str, "verified_at": str,
 		"template_version": map[string]any{"type": "integer", "minimum": 1},
 		"summary":          str,
 		"sections":         map[string]any{"type": "object", "additionalProperties": str, "description": "Authored Markdown keyed by the selected template's section keys. State unknowns explicitly; never invent evidence."},
@@ -68,6 +70,7 @@ func authoringToolSpecs() []map[string]any {
 	lookup := map[string]any{"type": "object", "required": []string{"template"}, "additionalProperties": false,
 		"properties": map[string]any{"template": str, "version": map[string]any{"type": "integer", "minimum": 1}}}
 	tools := []map[string]any{
+		{"name": "mesh_prepare_update", "description": "Prepare a writable published note with its content and revision. Edit, validate and publish through mesh_author_note; retain identity, template/version and scopes. Routine updates need no approval.", "inputSchema": map[string]any{"type": "object", "required": []string{"id"}, "additionalProperties": false, "properties": map[string]any{"id": str}}},
 		{"name": "mesh_drafts", "description": "Browse the explicit draft inbox with current access checks. Returns revisions for safe draft completion; ordinary search excludes drafts.", "inputSchema": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 20}, "offset": map[string]any{"type": "integer", "minimum": 0}}}},
 		{"name": "mesh_templates", "description": "Compact versioned catalog of note templates and optional blocks. Choose a purpose, then fetch only its template and selected blocks.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}},
 		{"name": "mesh_note_template", "description": "Fetch one note template, section keys and authoring guidance. Semantic type is separate from template choice.", "inputSchema": lookup},
@@ -85,12 +88,13 @@ func authoringToolSpecs() []map[string]any {
 		{"mesh_append_note", "Publish complete template-based knowledge. Fetch mesh_note_template for fields and guidance; no per-note approval."},
 		{"mesh_write_entity", "Publish an entity overview with the shared template authoring format; no per-note approval."},
 	} {
-		properties := authoringProperties()
-		// Rich block details are fetched only by writers that select the block.
-		properties["blocks"] = map[string]any{"type": "array", "items": map[string]any{"type": "object"}}
-		properties["sections"] = map[string]any{"type": "object", "additionalProperties": str}
+		// Keep compatibility entry points compact too. Writers fetch the complete,
+		// strict schema from mesh_note_template; duplicating it in two tool specs
+		// makes every reader pay for a format it does not use. Runtime decoding
+		// still rejects unknown and retired fields for every publication surface.
+		properties := map[string]any{"title": str, "type": str, "template": str, "summary": str, "scope": str}
 		tools = append(tools, map[string]any{"name": item.name, "description": item.description,
-			"inputSchema": map[string]any{"type": "object", "required": []string{"title"}, "additionalProperties": false, "properties": properties}})
+			"inputSchema": map[string]any{"type": "object", "required": []string{"title"}, "additionalProperties": true, "properties": properties}})
 	}
 
 	tools = append(tools, map[string]any{
@@ -162,7 +166,20 @@ func (s *Server) authoringSpec(ctx context.Context, a authoringArgs, forceType s
 	}
 	var scopes []string
 	want := strings.TrimSpace(a.Scope)
-	if sf := scopeFromCtx(ctx); sf != nil {
+	var update *vault.NoteSnapshot
+	if a.UpdateID != "" {
+		var rerr *rpcError
+		update, rerr = s.authorizedUpdate(ctx, a.UpdateID)
+		if rerr != nil {
+			return vault.NewNoteSpec{}, rerr
+		}
+		// Retain all existing scopes. New-note default scope selection must never
+		// silently remove audiences from a published note (including multi-scope notes).
+		scopes = append([]string{}, update.Frontmatter.EffectiveScopes()...)
+		if want != "" {
+			scopes = []string{want}
+		}
+	} else if sf := scopeFromCtx(ctx); sf != nil {
 		if want == "" {
 			want = sf.WriteScope
 		}
@@ -173,7 +190,7 @@ func (s *Server) authoringSpec(ctx context.Context, a authoringArgs, forceType s
 			return vault.NewNoteSpec{}, &rpcError{Code: codeInvalidParams, Message: "forbidden: you cannot write notes in the requested scope"}
 		}
 	}
-	if want != "" {
+	if update == nil && want != "" {
 		scopes = []string{want}
 	}
 	if forceType != "" {
@@ -194,6 +211,7 @@ func (s *Server) authoringSpec(ctx context.Context, a authoringArgs, forceType s
 	spec, err := vault.NormalizeSpec(vault.NewNoteSpec{
 		Type: vault.NoteType(a.Type), Title: a.Title, Template: a.Template, TemplateVersion: a.TemplateVersion,
 		DraftID: a.DraftID, DraftRevision: a.DraftRevision, VerifiedAt: a.VerifiedAt,
+		UpdateID: a.UpdateID, UpdateRevision: a.UpdateRevision,
 		Summary: a.Summary, Sections: a.Sections, Blocks: a.Blocks, Collections: a.Collections,
 		Related: a.Related, Supersedes: a.Supersedes, Tags: a.Tags, Status: a.Status,
 		Severity: a.Severity, Author: a.Author, Agent: agent, By: agent, Source: a.Source,
@@ -201,6 +219,9 @@ func (s *Server) authoringSpec(ctx context.Context, a authoringArgs, forceType s
 	})
 	if err != nil {
 		return spec, &rpcError{Code: codeInvalidParams, Message: err.Error()}
+	}
+	if update != nil {
+		spec.UpdatePath = update.Path
 	}
 	if spec.DraftID != "" {
 		snapshot, _, rerr := s.authorizedDraft(ctx, spec.DraftID)
@@ -238,15 +259,24 @@ func (s *Server) toolPrepareNote(ctx context.Context, raw json.RawMessage, valid
 		if err := vault.ValidateSpec(spec); err != nil && len(issues) == 0 {
 			issues = append(issues, err.Error())
 		}
+		if spec.UpdateID != "" && len(issues) == 0 {
+			if _, err := vault.PrepareNoteContext(ctx, s.vaultRoot, spec); err != nil {
+				issues = append(issues, ScrubPathsUnder(err.Error(), s.vaultRoot))
+			}
+		}
 		return textResult(map[string]any{"valid": len(issues) == 0, "issues": issues, "factual_correctness": "not assessed"}), nil
 	}
-	spec.Status = "draft"
+	if spec.UpdateID == "" {
+		spec.Status = "draft"
+	}
 	p, err := vault.PrepareNoteContext(ctx, s.vaultRoot, spec)
 	if err != nil {
 		return nil, &rpcError{Code: codeInvalidParams, Message: ScrubPathsUnder(err.Error(), s.vaultRoot)}
 	}
-	return textResult(map[string]any{"id": p.Result.ID, "markdown": string(p.Content), "issues": issues,
-		"saved": false, "identity_reserved": false, "draft_revision": a.DraftRevision, "template": spec.Template, "template_version": spec.TemplateVersion}), nil
+	source, sourceURL := frontmatterProvenance(string(p.Content))
+	rel, _ := filepath.Rel(s.vaultRoot, p.Result.Path)
+	return authoringContentResult(map[string]any{"id": p.Result.ID, "markdown": string(p.Content), "issues": issues,
+		"saved": false, "identity_reserved": false, "draft_revision": a.DraftRevision, "update_revision": a.UpdateRevision, "template": spec.Template, "template_version": spec.TemplateVersion}, source, sourceURL, rel)
 }
 
 func (s *Server) toolSaveDraft(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
@@ -279,6 +309,12 @@ func (s *Server) toolProposeTemplate(ctx context.Context, raw json.RawMessage) (
 // current file. A readable target must also be readable to every audience of the
 // new note, preventing a broad note from disclosing a private reference.
 func (s *Server) validateAuthoringLinks(ctx context.Context, spec vault.NewNoteSpec) error {
+	if spec.UpdateID != "" {
+		snapshot, rerr := s.authorizedUpdate(ctx, spec.UpdateID)
+		if rerr != nil || snapshot.Revision != spec.UpdateRevision {
+			return fmt.Errorf("unknown, inaccessible or changed update target")
+		}
+	}
 	if spec.DraftID != "" {
 		_, revision, rerr := s.authorizedDraft(ctx, spec.DraftID)
 		if rerr != nil || revision != spec.DraftRevision {

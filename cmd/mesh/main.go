@@ -65,7 +65,7 @@ func rootCmd() *cobra.Command {
 		versionCmd(),
 		upgradeCmd(),
 		initCmd(),
-		newCmd(), templatesCmd(), draftsCmd(),
+		newCmd(), templatesCmd(), draftsCmd(), updateCmd(),
 		indexCmd(),
 		codeCmd(),
 		embedCmd(),

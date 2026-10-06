@@ -83,6 +83,9 @@ type Frontmatter struct {
 	When    string   `yaml:"when"`
 	Created string   `yaml:"created,omitempty"`
 	Updated string   `yaml:"updated,omitempty"`
+	// Last editor is distinct from immutable creation provenance.
+	UpdatedBy    string `yaml:"updated_by,omitempty"`
+	UpdatedAgent string `yaml:"updated_agent,omitempty"`
 	// Authoring identity and discovery metadata. Prose is stored only in the body.
 	Template        string          `yaml:"template,omitempty"`
 	TemplateVersion int             `yaml:"template_version,omitempty"`

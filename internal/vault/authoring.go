@@ -22,6 +22,13 @@ const (
 // It checks shape and boundedness, not completeness, so a draft can contain honest gaps.
 func NormalizeSpec(in NewNoteSpec) (NewNoteSpec, error) {
 	spec := in
+	if in.UpdateID != "" {
+		if !authoringID(in.UpdateID) || in.DraftID != "" || in.DraftRevision != "" {
+			return spec, fmt.Errorf("%w: update_id must identify one published note, separately from draft completion", ErrInvalidSpec)
+		}
+	} else if in.UpdateRevision != "" {
+		return spec, fmt.Errorf("%w: update_revision requires update_id", ErrInvalidSpec)
+	}
 	if in.Do != "" || in.Dont != "" || in.Why != "" {
 		return spec, fmt.Errorf("%w: legacy do/dont/why authoring is unsupported; choose a template and body sections", ErrInvalidSpec)
 	}

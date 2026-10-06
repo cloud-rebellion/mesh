@@ -211,6 +211,7 @@ const (
 // the same time you add it to ToolSpecs() and the dispatch, having decided how it
 // relates to scope. The test + the runtime check below both fail closed otherwise.
 var toolScopeClass = map[string]toolClass{
+	"mesh_prepare_update":   classWrite,
 	"mesh_drafts":           classFiltered,
 	"mesh_templates":        classOpen,
 	"mesh_note_template":    classOpen,
@@ -256,6 +257,8 @@ func (s *Server) handleToolsCall(ctx context.Context, params json.RawMessage) (a
 		return nil, &rpcError{Code: codeMethodNotFound, Message: "unknown tool", Data: p.Name}
 	}
 	switch p.Name {
+	case "mesh_prepare_update":
+		return s.toolPrepareUpdate(ctx, p.Arguments)
 	case "mesh_drafts":
 		return s.toolDrafts(ctx, p.Arguments)
 	case "mesh_templates":
@@ -1374,6 +1377,10 @@ func (s *Server) toolWrite(ctx context.Context, raw json.RawMessage, forceType s
 		notePath = filepath.Base(res.Path)
 	}
 	out := map[string]any{"id": res.ID, "path": notePath, "when": res.When, "todo": res.TODOs, "status": spec.Status, "template": spec.Template, "template_version": spec.TemplateVersion, "revision": res.Revision}
+	if spec.UpdateID != "" {
+		out["updated"] = true
+		out["previous_revision"] = spec.UpdateRevision
+	}
 	if indexStale != "" {
 		out["index_stale"] = true
 		out["index_error"] = indexStale
@@ -1394,6 +1401,9 @@ func (s *Server) toolWrite(ctx context.Context, raw json.RawMessage, forceType s
 			out["warning"] = "The note IS saved at the path above. Only the index refresh failed, " +
 				"so it is not queryable yet. Do NOT call this tool again: a retry creates a " +
 				"duplicate note. Call mesh_reindex instead."
+			if spec.UpdateID != "" {
+				out["warning"] = "The update IS saved at the path above. Only the index refresh failed; do not retry the update with the old revision. Call mesh_reindex, then read the current note."
+			}
 		}
 	}
 	return textResult(out), nil

@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/bright-interaction/mesh/internal/vault"
 )
 
 // TestNewServerOpensReadOnly is the regression guard for the whole refactor. The per-window
@@ -44,11 +46,17 @@ func TestNewServerOpensReadOnly(t *testing.T) {
 // someone deciding what it does on the server every agent actually connects to.
 func TestEveryToolSurvivesOnAReadOnlyServer(t *testing.T) {
 	s := newTestServer(t)
+	editable, err := vault.CreateNote(s.vaultRoot, vault.NewNoteSpec{Template: "finding", Title: "Existing published edit fixture", Summary: "A fixture for preparation from a read-only index window.", Sections: fixtureSections("note")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedIndex(t, s.vaultRoot)
 	// No owner is running, so the two tools that wait for one would otherwise sit on the
 	// full 10s bound. They are still expected to SUCCEED (loudly, with owner_down).
 	s.ownerIndexTimeout = 200 * time.Millisecond
 
 	args := map[string]any{
+		"mesh_prepare_update":   map[string]any{"id": editable.ID},
 		"mesh_search":           map[string]any{"query": "storage"},
 		"mesh_fetch":            map[string]any{"id": "sqlite"},
 		"mesh_fetch_many":       map[string]any{"items": []map[string]any{{"id": "sqlite"}}},

@@ -62,7 +62,56 @@ access scope. A link cannot expose a target to an audience that cannot read it.
 MCP checks the current source file as well as indexed permissions. No speculative
 semantic match is silently turned into an asserted relationship.
 
-## Drafts, provenance and reading
+## Maintain existing documents
+
+When a schema, specification, method or product state changes, maintain its existing
+note. Routine edits based on registered templates need no template approval. Read the
+current note and its relevant links first; preserve still-applicable evidence, caveats
+and references. A new decision can have a separate `decision` note recording context,
+options, rationale and consequences. Link that actual accessible note from the updated
+document, and update the product index when its navigation needs to change. Use existing
+`related`, `supersedes`, collections and wikilinks; do not invent relationship types.
+For a changed shared method, inspect its connected consumers and record verified impact
+and follow-ups. A link identifies a possible dependency, not proof that code needs a change.
+
+1. Call `mesh_prepare_update` with `id`. It returns the complete editable `note` object,
+   its `update_id` and exact `update_revision`, with sections, selected blocks, tags,
+   collections and links prefilled. This is a writer workflow; readers use cards and
+   bounded section fetches. Full preparation is bounded and never silently clipped.
+2. Edit that object, adding supported links and retaining relevant historical substance.
+3. Use `mesh_author_note` with `action: "validate"`, then `action: "publish"`.
+   Both use the same object and shared publisher. A stale revision requires a fresh read
+   and reconciliation; it cannot overwrite another editor's change.
+
+Published-note updates retain the canonical file, stable ID, event/creation dates,
+template/version, access scopes, original author/source and custom metadata. Mesh sets
+`updated`, `updated_by` and `updated_agent` separately. Scope changes and template
+conversion require their own controlled workflows. Legacy or manually extended bodies
+that cannot be represented losslessly are refused until reconciled in a reviewed draft.
+An incomplete edit cannot replace a published note; create a separate linked draft.
+
+Local Mesh writers serialize each note and archive its exact previous bytes at
+`.mesh/note-history/<id>/<revision>.md` before replacement. This private history is
+excluded from ordinary indexing and sync; include it explicitly in backups. Hosted
+updates retain original bytes in Git history and commit the replacement under the same
+repository lock as team sync. Publication rechecks the client's current role, scope
+permissions and folder-ACL closure under that lock. External filesystem editors must
+coordinate with local publication; optimistic checks cannot serialize arbitrary editors.
+
+Historical verification blocks remain evidence of the checks they describe.
+`verified_at` is not prefilled on an update and is cleared unless the writer explicitly
+records verification for the edited content. Editing never claims a fresh factual check.
+
+The CLI uses the same system:
+
+```sh
+mesh update NOTE_ID --vault VAULT > edit.json
+# Review and edit the complete JSON object, preserving its update_id/revision.
+mesh update NOTE_ID --vault VAULT --spec edit.json --validate
+mesh update NOTE_ID --vault VAULT --spec edit.json --by EDITOR
+```
+
+## Drafts and reading
 
 `mesh_drafts` returns a bounded, scoped inbox with current revisions. Drafts can be
 fetched explicitly; ordinary search excludes them, and draft supersession claims
