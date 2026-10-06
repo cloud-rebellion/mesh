@@ -154,6 +154,65 @@ var noteTemplates = []NoteTemplate{
 	}},
 }
 
+// Product specification definitions were approved by the user on 2026-10-07.
+// Preserve their versioned section contracts when revising note content.
+func init() {
+	noteTemplates = append(noteTemplates, []NoteTemplate{
+		{"prd", 1, TypeNote, "Define the product problem, intended outcomes and observable requirements before choosing implementation details.", []SectionSpec{
+			section("problem", "Problem and audience", "Describe the observed need, affected users and evidence. Label assumptions and distinguish requested behavior from current behavior."),
+			section("outcomes", "Outcomes and success measures", "State desired outcomes and proposed measures. Use numerical targets only when agreed or sourced; distinguish targets from measured results."),
+			section("scope", "Scope and boundaries", "Define the included capability and its boundaries. Refer to existing context instead of recreating the whole product overview."),
+			section("requirements", "Product requirements", "Give each requirement a stable ID, an observable behavior and known priority. Preserve IDs during revision and link actual sources or decisions."),
+			section("dependencies", "Dependencies and constraints", "Identify relevant policies, systems and constraints. Link the authoritative notes and mark unresolved dependencies honestly."),
+			section("acceptance", "Acceptance criteria", "Associate each criterion with requirement IDs and a concrete expected outcome. State whether verification is planned or recorded."),
+			section("open_questions", "Risks and open questions", "Record unresolved product questions, assumptions and risks. Name decision owners only when known."),
+		}},
+		{"trd", 1, TypeNote, "Translate linked product needs and flows into technical constraints, interfaces and verifiable engineering requirements.", []SectionSpec{
+			section("context", "Scope and source requirements", "Identify the technical scope and link source product requirement IDs and relevant flows. Do not duplicate their prose."),
+			section("architecture", "Architecture and interfaces", "Describe boundaries, components and contracts. Distinguish proposed designs, approved decisions and observed implementation; link reusable methods."),
+			section("requirements", "Technical requirements", "Give requirements stable IDs and trace each to a product need, constraint or decision. Describe observable technical behavior."),
+			section("quality", "Quality attributes and limits", "Cover relevant security, accessibility, performance, availability, privacy and observability requirements. Mark unagreed limits instead of inventing targets."),
+			section("dependencies", "Dependencies and constraints", "Identify interfaces, platform constraints and known dependencies. Keep implementation choices provisional until supported by a decision."),
+			section("verification", "Verification and acceptance", "Map checks to technical requirement IDs. Separate a proposed test plan from completed checks and retain applicable version and evidence when checked."),
+			section("open_questions", "Risks and open questions", "Record technical uncertainty, trade-offs and unresolved decisions, including consequences for dependent specifications."),
+		}},
+		{"app-flow", 1, TypeConcept, "Explain user journeys, application states, transitions and recovery behavior with links to requirements and design.", []SectionSpec{
+			section("actors", "Actors and entry points", "Identify who enters the flow, through which entry points and with which prerequisites. Record only supported roles and access rules."),
+			section("main_flows", "Main flows", "Describe the main journey in ordered steps with stable flow or step IDs. Refer to requirement IDs and describe meaningful system responses."),
+			section("states", "States and transitions", "Describe important states, transitions and their conditions. Use an existing diagram or table block when it improves retrieval; label proposed states."),
+			section("alternatives", "Alternative and recovery flows", "Explain relevant errors, empty states, cancellation, permission failures and retries. State unknown recovery behavior explicitly."),
+			section("interfaces", "Screens and integration references", "Link actual screens, design briefs and system interfaces. Identify missing designs instead of inventing approved screens or endpoints."),
+			section("acceptance", "Acceptance and open questions", "Describe the flow's observable acceptance conditions and unresolved interactions. Separate walkthrough plans from recorded usability or execution evidence."),
+		}},
+		{"design-brief", 1, TypeNote, "Define the experience intent, design scope, constraints and review criteria for a product or feature.", []SectionSpec{
+			section("objective", "Objective and audience", "State the experience problem, audience and desired outcome; link the source product requirements and flow."),
+			section("experience", "Experience and design principles", "Describe concrete interaction, content and visual principles and why they fit the users. Avoid generic aesthetic slogans."),
+			section("deliverables", "Deliverables and scope", "Identify the required design outputs and coverage. Keep deliverables proportionate to the feature rather than requiring every possible artifact."),
+			section("constraints", "Accessibility and constraints", "Record relevant accessibility, platform, brand, localization and existing component constraints. Distinguish requirements from checked compliance."),
+			section("references", "References and rationale", "Link relevant existing components, designs, research and decisions, explaining their relevance. Label illustrative references and missing evidence."),
+			section("acceptance", "Review criteria and open questions", "State how the design will be reviewed against requirements and flows. Identify open design questions; recorded reviews need evidence and context."),
+		}},
+		{"backend-schema", 1, TypeConcept, "Describe the data model, integrity constraints, access boundaries and evolution of a backend without assuming a database engine.", []SectionSpec{
+			section("scope", "Scope and lifecycle", "Define the modeled domain and whether it describes current, proposed or historical structure. Identify source/revision when known."),
+			section("entities", "Entities and relationships", "Describe entities, identifiers, ownership and relationship cardinality. Use an existing diagram or table block where helpful; do not infer relationships from naming alone."),
+			section("structure", "Fields, constraints and indexes", "Document important fields, keys, validation, uniqueness, referential integrity and indexes with their reasons. Distinguish proposed constraints from enforced ones."),
+			section("access", "Access, tenancy and sensitive data", "Describe relevant access boundaries, tenant separation, sensitive fields and lifecycle obligations. Link the applicable policy and distinguish policy from implementation proof."),
+			section("evolution", "Migrations and compatibility", "Describe the supported schema evolution and compatibility plan. Source-derived schema/code requires provenance; proposed examples must be labeled illustrative."),
+			section("operations", "Integrity, retention and recovery", "Describe consistency, retention, deletion, backup and recovery requirements where relevant. Separate intended guarantees from tested operational evidence."),
+			section("verification", "Verification and open questions", "Record planned or performed checks, applicable schema version and remaining modeling uncertainty. Formatting does not verify a schema."),
+		}},
+		{"implementation-plan", 1, TypeNote, "Turn linked requirements and design decisions into ordered development work, verification, rollout and recovery.", []SectionSpec{
+			section("scope", "Scope and source requirements", "Link the product and technical requirements, flows, design and schema used by this plan. Identify what is ready and what still needs a decision."),
+			section("starting_point", "Starting point and code entry points", "Describe the inspected starting state and actual relevant files, symbols or interfaces with revision when known. Do not fabricate repository paths."),
+			section("work", "Work breakdown and dependencies", "Break work into bounded tasks with requirement references, dependencies and completion criteria. Supply owners and dates only when known."),
+			section("sequence", "Implementation sequence", "Describe the ordered changes and compatibility dependencies, with relevant reusable methods and decisions. Mark blocked tasks and prerequisites."),
+			section("verification", "Test and acceptance plan", "Map meaningful checks to task and requirement IDs; use code/evidence/verification blocks when useful. Separate planned tests from executed results."),
+			section("rollout", "Rollout and recovery", "Describe the release sequence, compatibility, rollback/recovery and acceptance evidence. Separate proposed actions from authorized or completed deployment."),
+			section("open_questions", "Risks and unresolved decisions", "State blockers, assumptions and decision dependencies that can change the plan. Link follow-ups and include ownership only when known."),
+		}},
+	}...)
+}
+
 var blockTemplates = []BlockTemplate{
 	{"table", 1, "A fetchable Markdown table with attributable or explicitly illustrative entries.", []FieldSpec{
 		field("purpose", "Purpose", "Explain what this table helps the reader compare or find."),

@@ -186,7 +186,7 @@ func TestDraftInboxAndRetiredInputs(t *testing.T) {
 
 func TestTemplateCatalogIsVersionedAndStatic(t *testing.T) {
 	c := templateCatalog()
-	if len(c["templates"].([]map[string]any)) != 13 || len(c["blocks"].([]map[string]any)) != 11 {
+	if len(c["templates"].([]map[string]any)) != 19 || len(c["blocks"].([]map[string]any)) != 11 {
 		t.Fatalf("catalog: %v", c)
 	}
 	s := &Server{}

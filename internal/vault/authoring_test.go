@@ -52,7 +52,7 @@ func completeFixtureSpec(spec NewNoteSpec) NewNoteSpec {
 
 func TestAuthoringCatalogAndBodyOnlyRoundTrip(t *testing.T) {
 	fixedNow(t)
-	if len(Templates()) != 13 || len(BlockTemplates()) != 11 {
+	if len(Templates()) != 19 || len(BlockTemplates()) != 11 {
 		t.Fatal("unexpected approved catalog")
 	}
 	copyCatalog := Templates()

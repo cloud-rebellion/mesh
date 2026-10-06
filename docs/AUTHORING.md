@@ -2,7 +2,8 @@
 
 Mesh has a versioned library of note templates and reusable blocks. Writers retrieve
 the definition they need, supply substantive content, and use the shared validator
-and durable publisher. The thirteen base templates are approved. **Creating notes
+and durable publisher. The thirteen base templates and six product specification
+templates are approved, giving nineteen versioned definitions. **Creating notes
 from any registered template requires no template approval.** Adding or changing a
 library definition requires the user's approval; an AI proposal never activates itself.
 
@@ -45,6 +46,20 @@ type is omitted it is derived from the template. A conflicting type is rejected.
 | `review` | note | Criteria; assessment; evidence; gaps; follow-ups |
 | `status` | status | Current state; changes; verification; blockers; next steps |
 | `index` | map | Scope; start here; grouped annotated links |
+| `prd` | note | Problem/audience; outcomes; scope; requirements; dependencies; acceptance; risks/questions |
+| `trd` | note | Source requirements; architecture/interfaces; technical requirements; quality/limits; dependencies; verification; risks/questions |
+| `app-flow` | concept | Actors/entry points; main flows; states/transitions; recovery; screen/interface references; acceptance/questions |
+| `design-brief` | note | Objective/audience; experience principles; deliverables/scope; accessibility/constraints; references/rationale; review/questions |
+| `backend-schema` | concept | Scope/lifecycle; entities/relationships; fields/constraints/indexes; access/tenancy; migrations; integrity/recovery; verification/questions |
+| `implementation-plan` | note | Source requirements; starting point/code; work/dependencies; sequence; tests; rollout/recovery; risks/decisions |
+
+Choose the specification documents the work actually needs. Link them from the
+product index and connect requirement IDs, flows, design, schemas and implementation
+checks using existing accessible notes. Keep approved requirements and decisions
+distinct from proposals and current implementation. Update the existing document
+when its subject changes; preserve its identity and relevant historical evidence.
+Worked examples in `docs/examples/product-specifications/` are fictional draft
+illustrations, not approved product requirements or recorded verification.
 
 Optional blocks are `code`, `evidence`, `verification`, `timeline`, `comparison`,
 `diagram`, `worked-example`, `checklist`, `recovery`, `follow-up`, and `table`. Only selected
