@@ -72,6 +72,7 @@ docker-compose.yml  deploy/Dockerfile.hub  deploy/entrypoint.sh  deploy/hub-imag
 
 # internal-only docs
 docs/S1-PLAN.md  docs/S2-PLAN.md  docs/M3-PLAN.md  docs/SPEC.md  deploy/DEPLOY.md
+docs/AUTHORING-VALIDATION.md
 
 # the release tooling and its runbook (they only run from the private monorepo)
 the monorepo-only release tooling and its runbook
@@ -89,9 +90,11 @@ must never name a stripped path, which a publish gate enforces.
 core imports it, and it is licensed commercially, so it goes with the pro layer.
 
 The **internal-only docs** (milestone working-plans, the deployment runbook, the full
-internal spec) describe Bright Interaction's own infrastructure and the monorepo the
-code is developed in, rather than the project itself. The public architecture story is
-`README.md` and the in-app docs (`internal/web/docs`).
+internal spec and release acceptance receipts) describe Bright Interaction's own
+infrastructure and the monorepo the code is developed in, rather than the project
+itself. The public architecture story is
+`README.md` and the in-app docs (`internal/web/docs`). The user-facing template
+contract in `docs/AUTHORING.md` remains public.
 
 The **eval fixtures** are query/answer sets written against a private vault, so each
 case names an internal system. `eval/tier0.json` and `eval/extract_judge_cases.json` are
