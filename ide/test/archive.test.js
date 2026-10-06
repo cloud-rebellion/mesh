@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { canonicalArchive, validateArchive, sha256, shippedAssets, shippedSources } from '../scripts/archive.mjs';
 import { releasePlan } from '../scripts/release-plan.mjs';
+import { installerMetadata, packageArchive } from '../scripts/vsix.mjs';
 
 function fixture() {
   const bytes = value => Buffer.from(typeof value === 'string' ? value : JSON.stringify(value));
@@ -19,6 +20,22 @@ function fixture() {
   for (const [name, content] of Object.entries(files)) if (name.startsWith('extension/') && name !== 'extension.vsixmanifest') expected.contents[name] = content;
   return { files, expected };
 }
+
+test('fixed VSIX builder carries the supported engine and installer assets without unshipped payloads', () => {
+  const { expected } = fixture();
+  const pkg = { name: expected.name, publisher: expected.publisher, version: expected.version, main: './src/extension.js', engines: { vscode: '^1.96.0' }, extensionKind: ['ui'], displayName: 'Mesh <test> & review', description: 'A "quoted" description', categories: ['Other'] };
+  expected.contents['extension/package.json'] = Buffer.from(JSON.stringify(pkg));
+  const bytes = packageArchive(expected);
+  const files = validateArchive(bytes, expected);
+  const manifest = Buffer.from(files['extension.vsixmanifest']).toString();
+  expect(manifest).toContain('Microsoft.VisualStudio.Code.Engine" Value="^1.96.0"');
+  expect(manifest).toContain('Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json"');
+  expect(manifest).toContain('Mesh &lt;test&gt; &amp; review');
+  expect(manifest).toContain('&quot;quoted&quot;');
+  expect(Buffer.from(files['[Content_Types].xml']).toString()).toContain('Extension="woff2" ContentType="font/woff2"');
+  expect(packageArchive(expected).equals(bytes)).toBe(true);
+  for (const patch of [{ main: 'other.js' }, { extensionKind: ['workspace'] }, { dependencies: { unsupported: '1' } }, { extensionDependencies: ['other.extension'] }, { browser: 'web.js' }, { icon: 'icon.png' }, { enabledApiProposals: ['unsafe'] }, { displayName: 'invalid\u0000xml' }]) expect(() => installerMetadata({ ...pkg, ...patch })).toThrow();
+});
 
 test('release handoff validates the exact clean bundle and emits draft-only arguments without execution', () => {
   const { files, expected } = fixture();

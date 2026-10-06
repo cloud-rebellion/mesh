@@ -2,7 +2,7 @@
   "name": "mesh-workspace",
   "displayName": "Mesh",
   "description": "Your shared knowledge graph, search and notes inside the editor.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "bright-interaction",
   "license": "SEE LICENSE IN LICENSE",
   "engines": { "vscode": "^1.96.0" },
@@ -55,7 +55,6 @@
     "release:plan": "bun scripts/release-plan.mjs"
   },
   "devDependencies": {
-    "@vscode/vsce": "3.6.2",
     "fflate": "0.8.2"
   }
 }
