@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bright-interaction/mesh/internal/extract"
 	"github.com/bright-interaction/mesh/internal/graph"
 	"github.com/bright-interaction/mesh/internal/hooks"
 	"github.com/bright-interaction/mesh/internal/index"
@@ -612,7 +613,7 @@ func hooksStopCheckCmd() *cobra.Command {
 				"reason":   "Mesh: record what you learned before finishing (keeps the next session smart).",
 				"hookSpecificOutput": map[string]any{
 					"hookEventName":     "Stop",
-					"additionalContext": "Before you finish: record durable, non-obvious knowledge with mesh_append_note. Use mesh_note_template to choose the purpose-specific template, then author a factual summary and its meaningful sections with evidence and verification limits. Use verified collection memberships and links only. Keep missing facts explicit in a draft; do not publish a title-only stub or invent content. If nothing useful was learned, you may stop.",
+					"additionalContext": "Before you finish: record durable, non-obvious knowledge with mesh_author_note. Use mesh_note_template to choose the purpose-specific template, then author a factual summary and its meaningful sections with evidence and verification limits. Validate before publishing and confirm the saved result. Use verified collection memberships and links only. Keep missing facts explicit in a draft; do not publish a title-only stub or invent content. If nothing useful was learned, you may stop.",
 				},
 			})
 			fmt.Println(string(out))
@@ -719,9 +720,8 @@ func spawnExtraction(vault, transcript string) {
 	}
 }
 
-// transcriptHasWriteback scans a session transcript for an actual mesh write TOOL
-// CALL (the quoted tool name in a tool_use entry), not a mere mention of it in the
-// injected contract text.
+// transcriptHasWriteback scans structured write requests, sharing the extractor's
+// durable-action policy. It does not replace checking the result of publication.
 func transcriptHasWriteback(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -731,8 +731,7 @@ func transcriptHasWriteback(path string) bool {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 16<<20)
 	for sc.Scan() {
-		line := sc.Text()
-		if strings.Contains(line, `"mesh_append_note"`) || strings.Contains(line, `"mesh_write_entity"`) {
+		if extract.TranscriptWritebackCall(sc.Bytes()) {
 			return true
 		}
 	}

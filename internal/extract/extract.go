@@ -54,7 +54,7 @@ type DigestStats struct {
 	UserMsgs     int  `json:"user_msgs"`
 	AsstMsgs     int  `json:"asst_msgs"`
 	ToolCalls    int  `json:"tool_calls"`
-	HadWriteback bool `json:"had_writeback"` // the agent already called mesh_append_note/write_entity (the current algo)
+	HadWriteback bool `json:"had_writeback"` // a structured durable authoring request occurred; not proof of success
 	DigestChars  int  `json:"digest_chars"`
 }
 
@@ -99,6 +99,9 @@ func Digest(path string, maxChars int) (string, DigestStats, error) {
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
 	for sc.Scan() {
 		st.Lines++
+		if TranscriptWritebackCall(sc.Bytes()) {
+			st.HadWriteback = true
+		}
 		var ln tLine
 		if json.Unmarshal(sc.Bytes(), &ln) != nil || ln.Message.Role == "" {
 			continue
@@ -124,9 +127,6 @@ func Digest(path string, maxChars int) (string, DigestStats, error) {
 				}
 			case "tool_use":
 				st.ToolCalls++
-				if bl.Name == "mesh_append_note" || bl.Name == "mesh_write_entity" {
-					st.HadWriteback = true
-				}
 				fmt.Fprintf(&b, "TOOL %s(%s)\n", bl.Name, indentContinuation(toolArg(bl.Name, bl.Input)))
 			}
 			// thinking + tool_result are intentionally skipped: verbose and low-signal

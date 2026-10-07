@@ -33,6 +33,48 @@ func TestTranscriptHasWriteback(t *testing.T) {
 	}
 }
 
+func TestModernAuthoringStopsWithoutFallbackExtraction(t *testing.T) {
+	for _, action := range []string{"publish", "draft"} {
+		t.Run(action, func(t *testing.T) {
+			sid := "modern-" + filepath.Base(t.TempDir())
+			transcript := filepath.Join(t.TempDir(), "transcript.jsonl")
+			record := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__mesh__mesh_author_note","input":{"action":"` + action + `","note":{"title":"A supported finding"}}}]}}`
+			if err := os.WriteFile(transcript, []byte(record+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			oldSpawn := spawnExtractionFn
+			var spawns atomic.Int32
+			spawnExtractionFn = func(string, string) { spawns.Add(1) }
+			t.Cleanup(func() { spawnExtractionFn = oldSpawn })
+			for _, prefix := range []string{"mesh-stop-", "mesh-extracted-"} {
+				marker := filepath.Join(os.TempDir(), prefix+sanitizeID(sid))
+				_ = os.Remove(marker)
+				t.Cleanup(func() { _ = os.Remove(marker) })
+			}
+			input := map[string]string{"session_id": sid, "transcript_path": transcript}
+			for attempt := 0; attempt < 2; attempt++ {
+				if out := runStopCheck(t, "", input, "--extract", "--vault", t.TempDir()); out != "" {
+					t.Fatalf("durable %s request was nudged again: %s", action, out)
+				}
+			}
+			if spawns.Load() != 0 {
+				t.Fatalf("durable %s request spawned %d fallback extractions", action, spawns.Load())
+			}
+		})
+	}
+}
+
+func TestQuotedWriteToolInUserTextDoesNotSuppressStopNudge(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "mention.jsonl")
+	record := `{"type":"user","message":{"role":"user","content":"The example says \"mesh_append_note\" but no tool was called."}}`
+	if err := os.WriteFile(p, []byte(record+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if transcriptHasWriteback(p) {
+		t.Fatal("quoted user text was mistaken for an actual write request")
+	}
+}
+
 func runStopCheck(t *testing.T, env string, input map[string]string, args ...string) string {
 	t.Helper()
 	t.Setenv("MESH_LLM_CHILD", env)

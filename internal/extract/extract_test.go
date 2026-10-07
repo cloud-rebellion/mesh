@@ -119,6 +119,22 @@ func writeTranscript(t *testing.T, lines ...string) string {
 	return p
 }
 
+func TestDigestModernAuthoringWriteback(t *testing.T) {
+	for _, action := range []string{"publish", "draft", "prepare", "validate"} {
+		t.Run(action, func(t *testing.T) {
+			p := writeTranscript(t, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"mcp__mesh__mesh_author_note","input":{"action":"`+action+`","note":{"title":"Supported finding"}}}]}}`)
+			_, stats, err := Digest(p, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := action == "publish" || action == "draft"
+			if stats.HadWriteback != want || stats.ToolCalls != 1 {
+				t.Fatalf("action %s: writeback=%v calls=%d, want %v/1", action, stats.HadWriteback, stats.ToolCalls, want)
+			}
+		})
+	}
+}
+
 func TestDigest(t *testing.T) {
 	p := writeTranscript(t,
 		`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"fix the deploy"}]}}`,
