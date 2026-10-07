@@ -24,13 +24,13 @@ function updateCommand(vscode, version, dependencies = {}) {
   const stage = dependencies.stage || stageUpdate;
   let active = false, disposed = false, controller;
   let installedVersion;
-  const run = async () => {
-    if (active || disposed || !vscode.workspace.isTrusted) return;
+  const run = async (automatic = false) => {
+    if (active || disposed || !vscode.workspace.isTrusted || (automatic && dependencies.enabled?.() === false)) return;
     active = true; controller = new AbortController();
     const signal = controller.signal;
     let context;
     const stopped = () => {
-      if (signal.aborted || disposed || !vscode.workspace.isTrusted) return true;
+      if (signal.aborted || disposed || !vscode.workspace.isTrusted || (automatic && dependencies.enabled?.() === false)) return true;
       try { return dependencies.context?.() !== context; } catch (_) { return true; }
     };
     let staged, phase = 'download';
@@ -44,22 +44,22 @@ function updateCommand(vscode, version, dependencies = {}) {
     };
     try {
       context = dependencies.context?.();
-      if (installedVersion) { phase = 'installed'; await reload(); return; }
-      const progress = (title, fn) => vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title, cancellable: true }, async (_, token) => {
+      if (installedVersion && !automatic) { phase = 'installed'; await reload(); return; }
+      const progress = (title, fn) => automatic ? fn() : vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title, cancellable: true }, async (_, token) => {
         const subscription = token.onCancellationRequested(() => controller.abort());
         if (token.isCancellationRequested) controller.abort();
         try { return await fn(); } finally { subscription.dispose(); }
       });
-      const overview = dependencies.overview ? await progress('Checking Mesh components…', () => dependencies.overview(signal)) : null;
-      const info = overview ? overview.info : await progress('Checking public Mesh IDE releases…', () => check(version, { signal }));
+      const overview = !automatic && dependencies.overview ? await progress('Checking Mesh components…', () => dependencies.overview(signal)) : null;
+      const info = overview ? overview.info : await progress('Checking public Mesh IDE releases…', () => check(installedVersion || version, { signal }));
       if (stopped()) return;
-      if (!info && !overview) { await vscode.window.showInformationMessage('No newer stable Mesh IDE release found in the most recent 300 public releases.'); return; }
+      if (!info && !overview) { if (!automatic) await vscode.window.showInformationMessage('No newer stable Mesh IDE release found in the most recent 300 public releases.'); return; }
       if (info) {
         manifest(info, info.version);
-        if (compare(info.version, version) <= 0) throw new Error('Update must be newer');
+        if (compare(info.version, installedVersion || version) <= 0) throw new Error('Update must be newer');
       }
       const buttons = [...(info ? ['Update now', 'Download VSIX'] : []), ...(overview ? ['Server update steps'] : [])];
-      const choice = await vscode.window.showInformationMessage(overview?.message || `Mesh IDE ${info.version} is available (installed: ${version}). Update now downloads from cloud-rebellion/mesh, verifies SHA-256 and installs the extension. Reload is offered separately; your Mesh server/core is not upgraded.`, { modal: true }, ...buttons);
+      const choice = automatic ? 'Update now' : await vscode.window.showInformationMessage(overview?.message || `Mesh IDE ${info.version} is available (installed: ${version}). Update now downloads from cloud-rebellion/mesh, verifies SHA-256 and installs the extension. Reload is offered separately; your Mesh server/core is not upgraded.`, { modal: true }, ...buttons);
       if (choice === 'Server update steps' && overview && !stopped()) {
         await vscode.window.showInformationMessage(overview.serverInstructions, { modal: true }, 'Done');
         return;
@@ -74,14 +74,17 @@ function updateCommand(vscode, version, dependencies = {}) {
         phase = 'install';
         // The installer is not cancellable. Await it before deleting its input;
         // never reload after an error or a disposed extension host.
-        await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Installing Mesh IDE…', cancellable: false }, () => vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(staged.file)));
+        const install = () => vscode.commands.executeCommand('workbench.extensions.installExtension', vscode.Uri.file(staged.file));
+        if (automatic) await install();
+        else await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Installing Mesh IDE…', cancellable: false }, install);
         installedVersion = info.version;
         phase = 'installed';
         try { await staged.cleanup(); } catch (_) {
           if (!stopped()) await vscode.window.showWarningMessage('Mesh IDE installed, but its temporary download could not be removed.');
         }
         staged = undefined;
-        await reload();
+        if (automatic && !stopped()) void vscode.window.showInformationMessage(`Mesh IDE ${installedVersion} installed automatically. It activates when VS Code reloads or restarts. Save your work before reloading.`, 'Reload window', 'Later').then(choice => choice === 'Reload window' && !stopped() ? vscode.commands.executeCommand('workbench.action.reloadWindow') : undefined).catch(() => {});
+        else if (!automatic) await reload();
         return;
       }
       const target = await vscode.window.showSaveDialog({ title: 'Save verified Mesh IDE update (choose a new file)', defaultUri: vscode.Uri.file(path.join(os.homedir(), 'Downloads', info.file)), filters: { 'VS Code Extension': ['vsix'] } });
@@ -92,7 +95,7 @@ function updateCommand(vscode, version, dependencies = {}) {
       await write(target.fsPath, bytes);
       await vscode.window.showInformationMessage(`Mesh IDE ${info.version} saved and SHA-256 verified. Use Extensions: Install from VSIX… and select the saved file. Your Mesh binary and viewer were not changed.`);
     } catch (_) {
-      if (!stopped()) await vscode.window.showErrorMessage(phase === 'reload' || phase === 'installed'
+      if (!stopped() && !automatic) await vscode.window.showErrorMessage(phase === 'reload' || phase === 'installed'
         ? 'Mesh IDE was installed, but the reload step did not complete. Save your work and use Developer: Reload Window.'
         : phase === 'install'
           ? 'VS Code did not confirm the Mesh IDE installation. No reload was requested. Check the Extensions view before retrying.'
@@ -106,6 +109,6 @@ function updateCommand(vscode, version, dependencies = {}) {
       active = false; controller = undefined;
     }
   };
-  return { run, cancel: () => controller?.abort(), dispose: () => { disposed = true; controller?.abort(); } };
+  return { run: () => run(false), runAutomatic: () => run(true), diagnostics: () => ({ active, installedVersion }), cancel: () => controller?.abort(), dispose: () => { disposed = true; controller?.abort(); } };
 }
 module.exports = { updateCommand, stageUpdate };

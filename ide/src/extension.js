@@ -9,6 +9,7 @@ const { ViewerLifecycle, launchSpec } = require('./lifecycle');
 const { Broker } = require('./broker');
 const { renderView } = require('./view');
 const { updateCommand } = require('./update-command');
+const { automaticUpdates } = require('./automatic-updates');
 const { coordinatedOverview } = require('./coordinated-updates');
 const DEFAULT = 'http://127.0.0.1:7474';
 let deactivateCurrent;
@@ -23,6 +24,7 @@ function activate(context) {
   const version = context.extension.packageJSON.version;
   const updates = updateCommand(vscode, version, {
     context: configured,
+    enabled: () => global('updates.automatic') !== false,
     overview: signal => {
       const base = configured();
       return coordinatedOverview(version, source, async requestSignal => {
@@ -33,7 +35,7 @@ function activate(context) {
       }, { signal });
     }
   });
-  context.subscriptions.push(updates, vscode.commands.registerCommand('mesh.checkUpdates', updates.run), vscode.commands.registerCommand('mesh.updateNow', updates.run));
+  context.subscriptions.push(automaticUpdates(updates.runAutomatic, () => vscode.workspace.isTrusted && global('updates.automatic') !== false), updates, vscode.commands.registerCommand('mesh.checkUpdates', updates.run), vscode.commands.registerCommand('mesh.updateNow', updates.run));
   const options = () => {
     const startup = global('startup') || {};
     if (isRemote(configured())) return { url: configured(), autoStart: false };

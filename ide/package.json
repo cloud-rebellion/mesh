@@ -2,7 +2,7 @@
   "name": "mesh-workspace",
   "displayName": "Mesh",
   "description": "Your shared knowledge graph, search and notes inside the editor.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "publisher": "bright-interaction",
   "license": "SEE LICENSE IN LICENSE",
   "engines": { "vscode": "^1.96.0" },
@@ -29,6 +29,10 @@
     "configuration": {
       "title": "Mesh",
       "properties": {
+        "mesh.updates.automatic": {
+          "type": "boolean", "default": true, "scope": "machine",
+          "description": "Automatically check stable Mesh IDE releases after startup and every six hours, verify SHA-256 and install them. Uses only the user-level value. A reload or restart activates the installed update; no automatic reload occurs."
+        },
         "mesh.startup": {
           "type": "object", "scope": "machine", "default": { "enabled": false },
           "additionalProperties": false,

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { zipSync, unzipSync } from 'fflate';
 
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-export const shippedSources = ['bridge.js', 'broker.js', 'client.js', 'connections.js', 'coordinated-updates.js', 'extension.js', 'lifecycle.js', 'update-command.js', 'updates.js', 'view.css', 'view.js'];
+export const shippedSources = ['automatic-updates.js', 'bridge.js', 'broker.js', 'client.js', 'connections.js', 'coordinated-updates.js', 'extension.js', 'lifecycle.js', 'update-command.js', 'updates.js', 'view.css', 'view.js'];
 export const shippedAssets = ['index.html', 'style.css', 'gl3d.js', 'app.js', 'search.js', 'dashboard.js', 'docs.js', 'shell.js', 'fonts/geist.woff2', 'fonts/jetbrains-mono.woff2'];
 // New builds must declare the shared-viewer source release. This is not an
 // assertion that the IDE and the connected server have been installed together.

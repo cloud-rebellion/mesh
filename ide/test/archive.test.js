@@ -63,7 +63,7 @@ test('canonical VSIX ignores original order and ZIP timestamps', () => {
   const first = canonicalArchive(validateArchive(zipSync(files, { mtime: new Date(2020, 1, 2) }), expected));
   const second = canonicalArchive(validateArchive(zipSync(reversed, { mtime: new Date(2025, 7, 8) }), expected));
   expect(first.equals(second)).toBe(true);
-  expect(Object.keys(validateArchive(first, expected))).toHaveLength(27);
+  expect(Object.keys(validateArchive(first, expected))).toHaveLength(28);
 });
 
 test('archive gate rejects missing, unexpected and traversal paths', () => {
