@@ -43,7 +43,7 @@ test('release handoff validates the exact clean bundle and emits draft-only argu
   const info = { schema: 1, extension: 'bright-interaction.mesh-workspace', version: expected.version, source_commit: expected.commit, dirty: false, mesh_release: expected.mesh_release, viewer_api: expected.viewer_api, file: `mesh-workspace-${expected.version}.vsix`, bytes: bytes.length, sha256: sha256(bytes) };
   const sums = `${info.sha256}  ${info.file}\n`;
   const plan = releasePlan(info, bytes, sums, expected);
-  expect(plan.repository).toBe('bright-interaction/mesh'); expect(plan.tag).toBe('ide-v0.2.1');
+  expect(plan.repository).toBe('cloud-rebellion/mesh'); expect(plan.tag).toBe('ide-v0.2.1');
   expect(plan.mesh_release).toBe('v0.41.7'); expect(plan.viewer_api).toBe(1);
   expect(plan.prerequisites.join('\n')).toContain('paired core release v0.41.7 and its public tag');
   expect(plan.prerequisites.join('\n')).toContain('obtain approval for paired publication');

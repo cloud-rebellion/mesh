@@ -59,7 +59,7 @@ function updateCommand(vscode, version, dependencies = {}) {
         if (compare(info.version, version) <= 0) throw new Error('Update must be newer');
       }
       const buttons = [...(info ? ['Update now', 'Download VSIX'] : []), ...(overview ? ['Server update steps'] : [])];
-      const choice = await vscode.window.showInformationMessage(overview?.message || `Mesh IDE ${info.version} is available (installed: ${version}). Update now downloads from bright-interaction/mesh, verifies SHA-256 and installs the extension. Reload is offered separately; your Mesh server/core is not upgraded.`, { modal: true }, ...buttons);
+      const choice = await vscode.window.showInformationMessage(overview?.message || `Mesh IDE ${info.version} is available (installed: ${version}). Update now downloads from cloud-rebellion/mesh, verifies SHA-256 and installs the extension. Reload is offered separately; your Mesh server/core is not upgraded.`, { modal: true }, ...buttons);
       if (choice === 'Server update steps' && overview && !stopped()) {
         await vscode.window.showInformationMessage(overview.serverInstructions, { modal: true }, 'Done');
         return;

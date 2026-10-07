@@ -2,7 +2,7 @@
   "name": "mesh-workspace",
   "displayName": "Mesh",
   "description": "Your shared knowledge graph, search and notes inside the editor.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "bright-interaction",
   "license": "SEE LICENSE IN LICENSE",
   "engines": { "vscode": "^1.96.0" },

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-Mesh-Sustainable-Use-License
 'use strict';
 const { createHash } = require('node:crypto');
-const REPO = 'bright-interaction/mesh';
+const REPO = 'cloud-rebellion/mesh';
 const RELEASES = `https://api.github.com/repos/${REPO}/releases`;
 const MAX_VSIX = 16 * 1024 * 1024;
 const stable = value => typeof value === 'string' && value === value.trim() && /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$/.test(value);
@@ -39,7 +39,7 @@ function allowedURL(raw, initial) {
   throw new Error('Untrusted release redirect');
 }
 async function readBounded(url, limit, { signal, fetchImpl = globalThis.fetch, timeout = 20000 } = {}) {
-  if (!(url.startsWith(RELEASES + '?per_page=100&page=') || /^https:\/\/github\.com\/bright-interaction\/mesh\/releases\/download\/ide-v[\d.]+\/(manifest\.json|SHA256SUMS|mesh-workspace-[\d.]+\.vsix)$/.test(url))) throw new Error('Untrusted release endpoint');
+  if (!(url.startsWith(RELEASES + '?per_page=100&page=') || /^https:\/\/github\.com\/cloud-rebellion\/mesh\/releases\/download\/ide-v[\d.]+\/(manifest\.json|SHA256SUMS|mesh-workspace-[\d.]+\.vsix)$/.test(url))) throw new Error('Untrusted release endpoint');
   const controller = new AbortController();
   const abort = () => controller.abort();
   if (signal?.aborted) abort();

@@ -11,8 +11,8 @@ const { compare, manifest, verifyBytes, readBounded, checkUpdate, downloadUpdate
 const { updateCommand, stageUpdate } = require('../src/update-command');
 const data = Buffer.from('fixture VSIX');
 const info = { schema: 1, extension: 'bright-interaction.mesh-workspace', version: '0.2.3', source_commit: 'a'.repeat(40), dirty: false, file: 'mesh-workspace-0.2.3.vsix', bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') };
-const base = 'https://github.com/bright-interaction/mesh/releases/download/ide-v0.2.3/';
-const listing = 'https://api.github.com/repos/bright-interaction/mesh/releases?per_page=100&page=1';
+const base = 'https://github.com/cloud-rebellion/mesh/releases/download/ide-v0.2.3/';
+const listing = 'https://api.github.com/repos/cloud-rebellion/mesh/releases?per_page=100&page=1';
 const row = { tag_name: 'ide-v0.2.3', draft: false, prerelease: false, assets: [info.file, 'manifest.json', 'SHA256SUMS'].map(name => ({ name, state: 'uploaded', browser_download_url: base + name })) };
 const json = value => new Response(JSON.stringify(value));
 function network(rows = [row], metadata = info) {
@@ -234,4 +234,12 @@ test('staging uses private unique files, rechecks bytes, and removes only its ow
     await expect(stat(a.file)).rejects.toThrow();
     expect(await readFile(b.file)).toEqual(data);
   } finally { await a.cleanup(); await b.cleanup(); }
+});
+
+test('release discovery stays on the canonical repository and refuses the transferred alias', async () => {
+  let calls = 0;
+  const options = { fetchImpl: async () => { calls++; throw new Error('unexpected request'); } };
+  await expect(readBounded('https://api.github.com/repos/bright-interaction/mesh/releases?per_page=100&page=1', 100, options)).rejects.toThrow('Untrusted release endpoint');
+  await expect(readBounded('https://github.com/bright-interaction/mesh/releases/download/ide-v0.2.3/manifest.json', 100, options)).rejects.toThrow('Untrusted release endpoint');
+  expect(calls).toBe(0);
 });
