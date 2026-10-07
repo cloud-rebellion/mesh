@@ -158,32 +158,50 @@ func (s *Store) indexVaultContext(ctx context.Context, notes []*ParsedNote, g *g
 // notes (vault-relative Path); removedIDs are ids whose files are gone (and old ids
 // retired on an id change). Returns the number of upserted notes.
 func (s *Store) IndexVaultIncremental(upserts []*ParsedNote, removedIDs []string, g *graph.Graph) (int, error) {
-	err := s.Write(func(tx *sql.Tx) error {
+	return s.IndexVaultIncrementalContext(context.Background(), upserts, removedIDs, g)
+}
+
+// IndexVaultIncrementalContext cancels the atomic note/search/graph delta before commit.
+func (s *Store) IndexVaultIncrementalContext(ctx context.Context, upserts []*ParsedNote, removedIDs []string, g *graph.Graph) (int, error) {
+	return s.indexVaultDeltaContext(ctx, upserts, removedIDs, g, nil, false)
+}
+
+func (s *Store) indexVaultDeltaContext(ctx context.Context, upserts []*ParsedNote, removedIDs []string, g *graph.Graph, dropped []FileError, replaceDropped bool) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	err := s.WriteContext(ctx, func(tx *sql.Tx) error {
 		trace := latency.Start("persist_incremental", "remove_notes_fts")
 		defer trace.End()
 		// Deletes first: a rename frees a path another note now claims, and an id
 		// change retires the old id; deleting before inserting avoids the notes.path
 		// UNIQUE and notes.id PK collisions.
 		for _, id := range removedIDs {
-			if _, err := tx.Exec(`DELETE FROM notes WHERE id=?`, id); err != nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM notes WHERE id=?`, id); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`DELETE FROM search_index WHERE node_id=?`, "note:"+id); err != nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM search_index WHERE node_id=?`, "note:"+id); err != nil {
 				return err
 			}
 		}
 
 		trace.Phase("upsert_notes_fts")
-		if err := upsertNoteRowsContext(context.Background(), tx, upserts); err != nil {
+		if err := upsertNoteRowsContext(ctx, tx, upserts); err != nil {
 			return err
 		}
 
 		trace.Phase("graph")
-		if err := writeGraphDeltaContext(context.Background(), tx, g); err != nil {
+		if err := writeGraphDeltaContext(ctx, tx, g); err != nil {
 			return err
 		}
 		trace.Phase("prune_vectors")
-		return pruneOrphanVectors(tx)
+		if err := pruneOrphanVectorsContext(ctx, tx); err != nil {
+			return err
+		}
+		if replaceDropped {
+			return writeDroppedRowsContext(ctx, tx, dropped, time.Now().Unix())
+		}
+		return nil
 	})
 	return len(upserts), err
 }

@@ -4,6 +4,7 @@
 package index
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -76,10 +77,21 @@ func Reconcile(s *Store, root string) (Reconciliation, error) {
 // concurrent `mesh search` reader. The returned Graph is the in-memory one, so the
 // caller can swap it directly without a LoadGraph round-trip.
 func ReconcileIncremental(s *Store, root string, cache *NoteCache, mtimeFast bool) (Reconciliation, error) {
+	return ReconcileIncrementalContext(context.Background(), s, root, cache, mtimeFast)
+}
+
+// ReconcileIncrementalContext cancels discovery and publication without advancing the cache before commit.
+func ReconcileIncrementalContext(ctx context.Context, s *Store, root string, cache *NoteCache, mtimeFast bool) (Reconciliation, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Reconciliation{}, err
+	}
 	trace := latency.Start("index_incremental", "discover_parse")
 	defer trace.End()
 	start := time.Now()
-	dd, err := s.DriftDeltaReport(root, mtimeFast)
+	dd, err := s.DriftDeltaReportContext(ctx, root, mtimeFast)
 	if err != nil {
 		return Reconciliation{}, err
 	}
@@ -94,24 +106,39 @@ func ReconcileIncremental(s *Store, root string, cache *NoteCache, mtimeFast boo
 	// exactly how it stayed invisible: no log line, no DroppedNotes record, and
 	// mesh_health reporting a clean vault while the note was missing from the index.
 	trace.Phase("record_dropped")
-	s.recordDropped(root, dd.Dropped)
 	if !dd.Drift.Any() {
+		if err := s.recordDroppedContext(ctx, root, dd.Dropped); err != nil {
+			return Reconciliation{}, err
+		}
 		r.Dur = time.Since(start)
 		return r, nil
 	}
 	trace.Phase("graph")
-	cache.Apply(dd.Upserts, dd.RemovedIDs)
-	g, _ := BuildGraph(cache.Snapshot())
+	nextCache := NewNoteCache()
+	nextCache.Seed(cache.Snapshot())
+	nextCache.Apply(dd.Upserts, dd.RemovedIDs)
+	g, _, err := BuildGraphContext(ctx, nextCache.Snapshot())
+	if err != nil {
+		return Reconciliation{}, err
+	}
 	trace.Phase("communities")
-	g.DetectCommunities(0)
+	if _, err := g.DetectCommunitiesContext(ctx, 0); err != nil {
+		return Reconciliation{}, err
+	}
 	trace.Phase("persist")
-	if _, err := s.IndexVaultIncremental(dd.Upserts, dd.RemovedIDs, g); err != nil {
+	if _, err := s.indexVaultDeltaContext(ctx, dd.Upserts, dd.RemovedIDs, g, dd.Dropped, true); err != nil {
 		return Reconciliation{}, err
 	}
 	// Refresh only this delta's bridge links. Full/code-index rebuilds still refresh
 	// every note because symbol changes can alter resolution for unchanged notes.
+	// Commit is the publication boundary: cancellation after it must still return
+	// the new graph/cache, while best-effort bridge work stays cancellable.
+	cache.Seed(nextCache.Snapshot())
+	s.publishDropped(root, dd.Dropped)
 	trace.Phase("code_links")
-	_, _ = s.linkChangedNotesToCode(root, dd.Upserts, dd.RemovedIDs)
+	if ctx.Err() == nil {
+		_, _ = s.linkChangedNotesToCodeContext(ctx, root, dd.Upserts, dd.RemovedIDs)
+	}
 	r.Reindexed = true
 	r.Graph = g
 	r.Dur = time.Since(start)
@@ -128,6 +155,17 @@ func ReconcileIncremental(s *Store, root string, cache *NoteCache, mtimeFast boo
 // Periodic, startup, directory, and remote-trigger passes must continue to use
 // ReconcileIncremental because their job is precisely to discover unknown drift.
 func ReconcilePaths(s *Store, root string, cache *NoteCache, paths []string) (Reconciliation, error) {
+	return ReconcilePathsContext(context.Background(), s, root, cache, paths)
+}
+
+// ReconcilePathsContext cancels discovery and publication without advancing the cache before commit.
+func ReconcilePathsContext(ctx context.Context, s *Store, root string, cache *NoteCache, paths []string) (Reconciliation, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Reconciliation{}, err
+	}
 	trace := latency.Start("index_targeted", "candidates")
 	defer trace.End()
 	start := time.Now()
@@ -160,6 +198,9 @@ func ReconcilePaths(s *Store, root string, cache *NoteCache, paths []string) (Re
 		return nil
 	}
 	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return Reconciliation{}, err
+		}
 		if err := addCandidate(path); err != nil {
 			return Reconciliation{}, err
 		}
@@ -169,11 +210,14 @@ func ReconcilePaths(s *Store, root string, cache *NoteCache, paths []string) (Re
 	// needs to reconsider a quarantined duplicate when the incumbent is deleted or
 	// changes id; that file can become the rightful owner without receiving a new
 	// fsnotify event of its own.
-	previousDropped, err := s.DroppedNotes()
+	previousDropped, err := s.droppedFromIndexContext(ctx)
 	if err != nil {
 		return Reconciliation{}, err
 	}
 	for _, fe := range previousDropped {
+		if err := ctx.Err(); err != nil {
+			return Reconciliation{}, err
+		}
 		if err := addCandidate(fe.Path); err != nil {
 			return Reconciliation{}, err
 		}
@@ -187,6 +231,9 @@ func ReconcilePaths(s *Store, root string, cache *NoteCache, paths []string) (Re
 	byPath := make(map[string]*ParsedNote, len(current))
 	incumbent := make(map[string]string, len(current))
 	for _, pn := range current {
+		if err := ctx.Err(); err != nil {
+			return Reconciliation{}, err
+		}
 		p := filepath.Clean(pn.Path)
 		byPath[p] = pn
 		incumbent[effectiveID(pn)] = p
@@ -205,6 +252,9 @@ func ReconcilePaths(s *Store, root string, cache *NoteCache, paths []string) (Re
 	scanned := make([]scannedFile, 0, len(rels))
 	claims := make([]idClaim, 0, len(current)+len(rels))
 	for _, pn := range current {
+		if err := ctx.Err(); err != nil {
+			return Reconciliation{}, err
+		}
 		p := filepath.Clean(pn.Path)
 		if _, targeted := candidates[p]; targeted {
 			continue
@@ -212,6 +262,9 @@ func ReconcilePaths(s *Store, root string, cache *NoteCache, paths []string) (Re
 		claims = append(claims, idClaim{ID: effectiveID(pn), Path: p})
 	}
 	for _, rel := range rels {
+		if err := ctx.Err(); err != nil {
+			return Reconciliation{}, err
+		}
 		abs := candidates[rel]
 		fi, perr := os.Lstat(abs)
 		var pn *ParsedNote
@@ -223,7 +276,10 @@ func ReconcilePaths(s *Store, root string, cache *NoteCache, paths []string) (Re
 			// of the vault merely because fsnotify reported its name.
 			perr = os.ErrNotExist
 		default:
-			pn, perr = ParseFile(abs)
+			pn, perr = ParseFileContext(ctx, abs)
+		}
+		if err := ctx.Err(); err != nil {
+			return Reconciliation{}, err
 		}
 		if perr != nil {
 			scanned = append(scanned, scannedFile{rel: rel, err: perr})
@@ -239,6 +295,9 @@ func ReconcilePaths(s *Store, root string, cache *NoteCache, paths []string) (Re
 	removed := map[string]bool{}
 	upserted := map[string]bool{}
 	for _, sf := range scanned {
+		if err := ctx.Err(); err != nil {
+			return Reconciliation{}, err
+		}
 		old := byPath[sf.rel]
 		switch {
 		case sf.err != nil:
@@ -274,6 +333,9 @@ func ReconcilePaths(s *Store, root string, cache *NoteCache, paths []string) (Re
 		}
 	}
 	for id := range removed {
+		if err := ctx.Err(); err != nil {
+			return Reconciliation{}, err
+		}
 		if !upserted[id] {
 			dd.RemovedIDs = append(dd.RemovedIDs, id)
 		}
@@ -291,22 +353,37 @@ func ReconcilePaths(s *Store, root string, cache *NoteCache, paths []string) (Re
 		Dropped: len(dd.Dropped),
 	}
 	trace.Phase("record_dropped")
-	s.recordDropped(root, dd.Dropped)
 	if !dd.Drift.Any() {
+		if err := s.recordDroppedContext(ctx, root, dd.Dropped); err != nil {
+			return Reconciliation{}, err
+		}
 		r.Dur = time.Since(start)
 		return r, nil
 	}
 	trace.Phase("graph")
-	cache.Apply(dd.Upserts, dd.RemovedIDs)
-	g, _ := BuildGraph(cache.Snapshot())
-	trace.Phase("communities")
-	g.DetectCommunities(0)
-	trace.Phase("persist")
-	if _, err := s.IndexVaultIncremental(dd.Upserts, dd.RemovedIDs, g); err != nil {
+	nextCache := NewNoteCache()
+	nextCache.Seed(cache.Snapshot())
+	nextCache.Apply(dd.Upserts, dd.RemovedIDs)
+	g, _, err := BuildGraphContext(ctx, nextCache.Snapshot())
+	if err != nil {
 		return Reconciliation{}, err
 	}
+	trace.Phase("communities")
+	if _, err := g.DetectCommunitiesContext(ctx, 0); err != nil {
+		return Reconciliation{}, err
+	}
+	trace.Phase("persist")
+	if _, err := s.indexVaultDeltaContext(ctx, dd.Upserts, dd.RemovedIDs, g, dd.Dropped, true); err != nil {
+		return Reconciliation{}, err
+	}
+	// Commit is the publication boundary: cancellation after it must still return
+	// the new graph/cache, while best-effort bridge work stays cancellable.
+	cache.Seed(nextCache.Snapshot())
+	s.publishDropped(root, dd.Dropped)
 	trace.Phase("code_links")
-	_, _ = s.linkChangedNotesToCode(root, dd.Upserts, dd.RemovedIDs)
+	if ctx.Err() == nil {
+		_, _ = s.linkChangedNotesToCodeContext(ctx, root, dd.Upserts, dd.RemovedIDs)
+	}
 	r.Reindexed = true
 	r.Graph = g
 	r.Dur = time.Since(start)

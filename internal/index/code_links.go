@@ -72,6 +72,10 @@ func (s *Store) LinkNotesToCodeContext(ctx context.Context, vaultRoot string) (i
 // old links must disappear. Code-index changes and full reconciliation still use
 // LinkNotesToCode: a symbol change can change resolution for ANY note.
 func (s *Store) linkChangedNotesToCode(root string, upserts []*ParsedNote, removed []string) (int, error) {
+	return s.linkChangedNotesToCodeContext(context.Background(), root, upserts, removed)
+}
+
+func (s *Store) linkChangedNotesToCodeContext(ctx context.Context, root string, upserts []*ParsedNote, removed []string) (int, error) {
 	ids := make(map[string]bool, len(upserts)+len(removed))
 	for _, pn := range upserts {
 		ids[effectiveID(pn)] = true
@@ -84,7 +88,7 @@ func (s *Store) linkChangedNotesToCode(root string, upserts []*ParsedNote, remov
 		changed = append(changed, id)
 	}
 	sort.Strings(changed)
-	return s.linkNotesToCodeContext(context.Background(), root, changed)
+	return s.linkNotesToCodeContext(ctx, root, changed)
 }
 
 // A nil changed set means full rebuild; an empty non-nil set means no work.

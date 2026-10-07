@@ -35,15 +35,18 @@ var assetsFS embed.FS
 
 // Server serves the localhost graph viewer + app shell for one vault.
 type Server struct {
-	vaultRoot     string
-	store         *index.Store
-	owner         *index.OwnerLock // non-nil only for NewOwningServer; released by Close
-	ownerOpCancel context.CancelFunc
-	ownerOpDone   chan struct{}
-	ownerOpWake   chan struct{} // deterministic test wake; ticker is the cross-process path
-	lifetimeCtx   context.Context
-	auth          authConfig
-	basePath      string // "" for root, or "/app" when served under a path
+	vaultRoot        string
+	store            *index.Store
+	owner            *index.OwnerLock // non-nil only for NewOwningServer; released by Close
+	ownerOpCancel    context.CancelFunc
+	ownerOpDone      chan struct{}
+	ownerOpWake      chan struct{} // deterministic test wake; ticker is the cross-process path
+	ownerWatchCancel context.CancelFunc
+	ownerWatchDone   chan struct{}
+	ownerNotes       *index.NoteCache // protected by graphUpdateGate; nil after a manual full rebuild
+	lifetimeCtx      context.Context
+	auth             authConfig
+	basePath         string // "" for root, or "/app" when served under a path
 
 	// scopeResolver, when set, maps a request to the caller's allowed-scope set so the
 	// graph/search/note surfaces are filtered per member. nil (standalone `mesh ui`) =
@@ -338,10 +341,17 @@ type owningReindexFunc func(context.Context, *index.Store, string) (*graph.Graph
 // for the stale-owner window. The small reindex seam keeps that lifecycle deterministic
 // under test without a mutable package-global hook.
 func NewOwningServerContext(ctx context.Context, vaultRoot string) (*Server, error) {
-	return newOwningServerContext(ctx, vaultRoot, index.ReindexContext)
+	cache := index.NewNoteCache()
+	return newOwningServerContext(ctx, vaultRoot, func(ctx context.Context, store *index.Store, root string) (*graph.Graph, error) {
+		g, notes, err := index.ReindexFullContext(ctx, store, root)
+		if err == nil {
+			cache.Seed(notes)
+		}
+		return g, err
+	}, cache)
 }
 
-func newOwningServerContext(ctx context.Context, vaultRoot string, reindex owningReindexFunc) (*Server, error) {
+func newOwningServerContext(ctx context.Context, vaultRoot string, reindex owningReindexFunc, watchCache ...*index.NoteCache) (*Server, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -404,6 +414,10 @@ func newOwningServerContext(ctx context.Context, vaultRoot string, reindex ownin
 	s.ownerOpDone = make(chan struct{})
 	s.ownerOpWake = make(chan struct{}, 1)
 	go s.pollOwnerOps(opCtx)
+	if len(watchCache) > 0 {
+		s.ownerNotes = watchCache[0]
+		s.startOwnerVaultWatch(s.lifetimeContext())
+	}
 	return s, nil
 }
 
@@ -452,8 +466,16 @@ func (s *Server) lifetimeContext() context.Context {
 }
 
 func (s *Server) Close() error {
+	if s.ownerWatchCancel != nil {
+		s.ownerWatchCancel()
+	}
 	if s.ownerOpCancel != nil {
 		s.ownerOpCancel()
+	}
+	if s.ownerWatchDone != nil {
+		<-s.ownerWatchDone
+	}
+	if s.ownerOpDone != nil {
 		<-s.ownerOpDone // never close the store under an in-flight queue transaction
 	}
 	release, err := s.acquireGraphUpdate(context.Background())
@@ -552,6 +574,7 @@ func (s *Server) reindexAndPublish(ctx context.Context, drainOps bool) error {
 	if err != nil {
 		return err
 	}
+	s.ownerNotes = nil // a full/manual writer bypassed the incremental cache
 	s.publishGraph(g)
 	return nil
 }

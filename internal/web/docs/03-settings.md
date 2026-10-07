@@ -30,4 +30,8 @@ environment; Mesh reads it at run time.
 ## Reindex
 
 The Index block shows note/node/edge/vector counts and which signals are active.
+An owning viewer automatically updates its index and search when another Mesh
+client or the hub adds, edits, or removes vault notes. Filesystem events trigger
+updates, with periodic checks recovering missed events. A read-only viewer uses
+the index maintained by its configured owner.
 "Reindex now" re-parses the vault and rebuilds the graph, the same as `mesh index`.

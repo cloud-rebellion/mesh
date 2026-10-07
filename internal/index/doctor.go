@@ -230,7 +230,18 @@ type DriftDelta struct {
 // which catches any such case within one interval. Pass false for a correctness
 // pass (the tick, `mesh doctor`, startup).
 func (s *Store) DriftDeltaReport(root string, mtimeFast bool) (DriftDelta, error) {
-	rows, err := s.readDB.Query(`SELECT path, id, retrieval_hash, mtime FROM notes`)
+	return s.DriftDeltaReportContext(context.Background(), root, mtimeFast)
+}
+
+// DriftDeltaReportContext keeps discovery, parsing and SQL reads within the owner's lifetime.
+func (s *Store) DriftDeltaReportContext(ctx context.Context, root string, mtimeFast bool) (DriftDelta, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return DriftDelta{}, err
+	}
+	rows, err := s.readDB.QueryContext(ctx, `SELECT path, id, retrieval_hash, mtime FROM notes`)
 	if err != nil {
 		return DriftDelta{}, err
 	}
@@ -244,6 +255,9 @@ func (s *Store) DriftDeltaReport(root string, mtimeFast bool) (DriftDelta, error
 	}
 	dbByPath := map[string]rec{}
 	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return DriftDelta{}, err
+		}
 		var p, id, h string
 		var mt int64
 		if err := rows.Scan(&p, &id, &h, &mt); err != nil {
@@ -252,9 +266,12 @@ func (s *Store) DriftDeltaReport(root string, mtimeFast bool) (DriftDelta, error
 		}
 		dbByPath[p] = rec{id, h, mt}
 	}
+	if err := rows.Err(); err != nil {
+		return DriftDelta{}, err
+	}
 	rows.Close()
 
-	files, err := vault.Walk(root)
+	files, err := vault.WalkContext(ctx, root)
 	if err != nil {
 		return DriftDelta{}, err
 	}
@@ -276,6 +293,9 @@ func (s *Store) DriftDeltaReport(root string, mtimeFast bool) (DriftDelta, error
 	// whether the watcher or a `mesh index` ran last.
 	incumbent := make(map[string]string, len(dbByPath))
 	for p, r := range dbByPath {
+		if err := ctx.Err(); err != nil {
+			return DriftDelta{}, err
+		}
 		incumbent[r.id] = p
 	}
 	// Gather every file's claim BEFORE classifying any of them: whether a file is drift
@@ -290,6 +310,9 @@ func (s *Store) DriftDeltaReport(root string, mtimeFast bool) (DriftDelta, error
 	scanned := make([]scannedFile, 0, len(files))
 	claims := make([]idClaim, 0, len(files))
 	for _, f := range files {
+		if err := ctx.Err(); err != nil {
+			return DriftDelta{}, err
+		}
 		rel, err := filepath.Rel(root, f)
 		if err != nil {
 			rel = f
@@ -304,7 +327,10 @@ func (s *Store) DriftDeltaReport(root string, mtimeFast bool) (DriftDelta, error
 				continue
 			}
 		}
-		pn, perr := ParseFile(f)
+		pn, perr := ParseFileContext(ctx, f)
+		if err := ctx.Err(); err != nil {
+			return DriftDelta{}, err
+		}
 		if perr != nil {
 			scanned = append(scanned, scannedFile{rel: rel, err: perr})
 			continue
@@ -317,6 +343,9 @@ func (s *Store) DriftDeltaReport(root string, mtimeFast bool) (DriftDelta, error
 	owner := resolveIDOwners(claims, incumbent)
 
 	for _, sf := range scanned {
+		if err := ctx.Err(); err != nil {
+			return DriftDelta{}, err
+		}
 		if sf.err != nil {
 			// A file that no longer parses but is in the index must be dropped (a full
 			// reindex would), not silently kept stale by the incremental cache path.
@@ -374,6 +403,9 @@ func (s *Store) DriftDeltaReport(root string, mtimeFast bool) (DriftDelta, error
 		}
 	}
 	for p, r := range dbByPath {
+		if err := ctx.Err(); err != nil {
+			return DriftDelta{}, err
+		}
 		if !seen[p] {
 			dd.Drift.Removed = append(dd.Drift.Removed, p)
 			removed[r.id] = true
@@ -382,6 +414,9 @@ func (s *Store) DriftDeltaReport(root string, mtimeFast bool) (DriftDelta, error
 	// A rename surfaces the old path as Removed and the new path as Added with the
 	// SAME id; never delete an id we are upserting.
 	for id := range removed {
+		if err := ctx.Err(); err != nil {
+			return DriftDelta{}, err
+		}
 		if !upsertIDs[id] {
 			dd.RemovedIDs = append(dd.RemovedIDs, id)
 		}
