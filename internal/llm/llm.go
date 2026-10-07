@@ -5,9 +5,9 @@
 // stdlib-only (no SDK) and speaks three backends behind one Complete interface:
 //
 //   - cli (the default): the team's existing coding-agent CLI (e.g. `claude -p`),
-//     already authenticated in the dev's IDE. The prompt goes in on stdin, the
-//     completion comes back on stdout. No API key for the curator to hold: it
-//     reuses whatever agent the dev already runs. This is how most devs use Mesh.
+//     already authenticated in the dev's IDE, invoked without agent tools or
+//     discovered MCP/configuration. System and user prompts remain separate.
+//     Custom adapters require an explicit completion-only JSON contract.
 //   - anthropic: Anthropic Messages API with an explicit key (best when running
 //     headless/always-on where no IDE CLI is logged in).
 //   - local: any OpenAI-compatible /v1/chat/completions endpoint (e.g. a local
@@ -77,13 +77,13 @@ func (f Func) Describe() string { return "stub" }
 
 // ---- CLI backend (BYOAI via the dev's coding-agent CLI, no API key) ----
 
-// cliClient runs the team's existing coding-agent CLI (default `claude -p`) as a
-// subprocess: the combined system+user prompt goes in on stdin, the completion
-// comes back on stdout. This is the zero-key path most devs already have
-// authenticated in their IDE, so the curator never holds an API key of its own.
+// cliClient invokes the authenticated provider as a completion-only subprocess.
+// Claude uses an actual system-prompt argument and user-only stdin; custom
+// adapters receive separate JSON fields. Output is bounded before parsing.
 type cliClient struct {
 	argv    []string
 	timeout time.Duration
+	claude  bool
 }
 
 func (c *cliClient) Describe() string { return "cli/" + strings.Join(c.argv, " ") }
@@ -91,8 +91,9 @@ func (c *cliClient) Describe() string { return "cli/" + strings.Join(c.argv, " "
 func (c *cliClient) Complete(ctx context.Context, system, user string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, c.argv[0], c.argv[1:]...)
-	cmd.Stdin = strings.NewReader(system + "\n\n" + user)
+	argv, input := c.completionCommand(system, user)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Stdin = strings.NewReader(input)
 	// The child (default `claude -p`) is a third party that phones home, and note/
 	// connector content flows into its prompt (a prompt-injection reach). Never hand it
 	// the parent's full environment: strip mesh's own secrets (MESH_*) and any other
@@ -102,10 +103,14 @@ func (c *cliClient) Complete(ctx context.Context, system, user string) (string, 
 	// Append after sanitizing: a value inherited from the parent is stripped with
 	// the other MESH_* variables, then replaced with the one trusted fixed value.
 	cmd.Env = SubprocessEnv()
-	var out, errb bytes.Buffer
+	out := boundedCLIOutput{limit: maxCLIOutputBytes, cancel: cancel}
+	errb := boundedCLIOutput{limit: maxCLIErrorBytes, cancel: cancel}
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
 	err := cmd.Run()
+	if out.overflow || errb.overflow {
+		return "", ErrOutputLimit
+	}
 	if ctx.Err() != nil {
 		return "", ctx.Err() // timeout / cancellation: transient, retry next pass
 	}
@@ -130,6 +135,9 @@ func (c *cliClient) Complete(ctx context.Context, system, user string) (string, 
 		// job, so it must be charged an attempt and retired at the cap, not treated as
 		// an operator outage that halts every other job.
 		return "", fmt.Errorf("curator cli %q returned no output", c.argv[0])
+	}
+	if c.claude {
+		return claudeCompletionResult(s)
 	}
 	return s, nil
 }
@@ -250,7 +258,7 @@ const (
 	defaultAnthropicModel = "claude-sonnet-4-6"
 	anthropicVersion      = "2023-06-01"
 	defaultMaxTokens      = 8192
-	defaultCuratorCmd     = "claude -p" // the dev's authed coding-agent CLI
+	defaultCuratorCmd     = "claude -p" // built into a completion-only invocation
 	defaultCLITimeout     = 300 * time.Second
 )
 
@@ -260,6 +268,7 @@ const (
 //	MESH_CURATOR_MODEL   model id (anthropic default claude-sonnet-4-6; required for local)
 //	MESH_CURATOR_MAXTOK  max output tokens (default 8192; anthropic/local only)
 //	cli:       MESH_CURATOR_CMD (default "claude -p"), MESH_CURATOR_CMD_TIMEOUT (seconds)
+//	custom CLI: MESH_CURATOR_CLI_CONTRACT=mesh-completion-v1 (see docs/EXTRACTION.md)
 //	anthropic: MESH_ANTHROPIC_KEY (fallback ANTHROPIC_API_KEY), MESH_ANTHROPIC_BASE
 //	local:     MESH_CURATOR_ENDPOINT (e.g. http://localhost:11434/v1), MESH_CURATOR_KEY
 func NewFromEnv() (Client, error) {
@@ -360,7 +369,7 @@ func newFromEnvPrefix(p string) (Client, error) {
 		if v, err := strconv.Atoi(os.Getenv(p + "_CMD_TIMEOUT")); err == nil && v > 0 {
 			to = time.Duration(v) * time.Second
 		}
-		return &cliClient{argv: argv, timeout: to}, nil
+		return newCompletionCLI(argv, to, strings.TrimSpace(os.Getenv(p+"_CLI_CONTRACT")), model)
 	case "anthropic":
 		key := firstNonEmpty(os.Getenv("MESH_ANTHROPIC_KEY"), os.Getenv("ANTHROPIC_API_KEY"))
 		if key == "" {

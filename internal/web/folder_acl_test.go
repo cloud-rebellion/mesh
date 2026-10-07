@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bright-interaction/mesh/internal/llm"
 )
 
 // TestWebFolderACLFencesEveryReadSurface proves the per-member web app applies the
@@ -82,6 +84,7 @@ func TestWebFolderACLFencesEveryReadSurface(t *testing.T) {
 	// Filtering the citations alone would leave the fenced note's body in the answer.
 	t.Setenv("MESH_CURATOR_AGENT", "cli")
 	t.Setenv("MESH_CURATOR_CMD", "cat")
+	t.Setenv("MESH_CURATOR_CLI_CONTRACT", llm.CompletionCLIContract)
 
 	call := func(method, path, tok, body string) (int, string) {
 		t.Helper()

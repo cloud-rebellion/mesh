@@ -191,6 +191,11 @@ func TestNewFromEnv(t *testing.T) {
 	// cli is the default when no agent is set, and reads MESH_CURATOR_CMD.
 	t.Setenv("MESH_CURATOR_AGENT", "")
 	t.Setenv("MESH_CURATOR_CMD", "myagent --print")
+	t.Setenv("MESH_CURATOR_CLI_CONTRACT", "")
+	if _, err = NewFromEnv(); err == nil {
+		t.Fatal("uncontracted custom agent must not receive transcript data")
+	}
+	t.Setenv("MESH_CURATOR_CLI_CONTRACT", CompletionCLIContract)
 	c, err = NewFromEnv()
 	if err != nil {
 		t.Fatal(err)
@@ -221,15 +226,15 @@ func writeScript(t *testing.T, body string) string {
 }
 
 func TestCLIComplete(t *testing.T) {
-	// `cat` echoes stdin to stdout, so the completion is exactly the prompt we sent:
-	// proves the prompt reaches the subprocess on stdin and the reply is read back.
+	// A custom completion adapter receives distinct system/user JSON fields.
 	c := &cliClient{argv: []string{writeScript(t, "cat")}, timeout: generousTimeout}
 	out, err := c.Complete(context.Background(), "SYS-INSTRUCTIONS", "USER-PAYLOAD")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "SYS-INSTRUCTIONS") || !strings.Contains(out, "USER-PAYLOAD") {
-		t.Fatalf("prompt did not reach the CLI on stdin: %q", out)
+	var request map[string]string
+	if json.Unmarshal([]byte(out), &request) != nil || request["protocol"] != CompletionCLIContract || request["system"] != "SYS-INSTRUCTIONS" || request["user"] != "USER-PAYLOAD" {
+		t.Fatalf("separate completion fields did not reach the adapter: %q", out)
 	}
 }
 

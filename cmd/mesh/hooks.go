@@ -596,8 +596,7 @@ func hooksStopCheckCmd() *cobra.Command {
 				// queue (once per session), if enabled. Never blocks the stop.
 				if autoExtract && vault != "" && in.TranscriptPath != "" {
 					exMarker := filepath.Join(os.TempDir(), "mesh-extracted-"+sanitizeID(sid))
-					if _, err := os.Stat(exMarker); err != nil {
-						_ = os.WriteFile(exMarker, []byte("1"), 0o644)
+					if claimExtractionSession(exMarker) {
 						if claimExtractionSlot(vault, extractCap, extractionNow()) {
 							spawnExtractionFn(vault, in.TranscriptPath)
 						} else if extractCap > 0 {
@@ -630,6 +629,16 @@ var (
 	spawnExtractionFn = spawnExtraction
 	extractionNow     = time.Now
 )
+
+// claimExtractionSession prevents concurrent Stop processes from harvesting the
+// same session more than once. A failed or existing claim never starts extraction.
+func claimExtractionSession(marker string) bool {
+	f, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return false
+	}
+	return f.Close() == nil
+}
 
 // claimExtractionSlot atomically claims one of cap daily slots. O_EXCL makes the
 // ceiling hold even when many Stop hooks finish concurrently.

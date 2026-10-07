@@ -144,9 +144,20 @@ func Digest(path string, maxChars int) (string, DigestStats, error) {
 		// to ~1.5 KB: the tail index was then negative-sized and sliced out of range,
 		// panicking the process. Clamp first, and drop any half rune the byte cut left
 		// behind so a split multi-byte character never reaches the model.
-		head := "USER (task): " + clip(firstUser, 2000) + "\n...\n"
+		head := "USER (task): " + indentContinuation(clip(firstUser, 2000)) + "\n...\n"
 		if room := maxChars - len(head); room > 0 {
-			digest = head + strings.ToValidUTF8(digest[len(digest)-room:], "")
+			start := len(digest) - room
+			tail := digest[start:]
+			if start > 0 && digest[start-1] != '\n' {
+				// The first retained line is a fragment, not a new turn. Reserve
+				// its indentation inside the byte budget, including tiny budgets.
+				if room < 2 {
+					tail = " "
+				} else {
+					tail = "  " + tail[2:]
+				}
+			}
+			digest = head + strings.ToValidUTF8(tail, "")
 		} else {
 			digest = strings.ToValidUTF8(head[:maxChars], "")
 		}

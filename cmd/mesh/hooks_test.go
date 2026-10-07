@@ -204,3 +204,29 @@ func TestExtractionDailyCapConcurrent(t *testing.T) {
 		t.Fatalf("concurrent claims = %d, want 10", won.Load())
 	}
 }
+
+func TestExtractionSessionClaimConcurrent(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "session")
+	var wins atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if claimExtractionSession(marker) {
+				wins.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins.Load() != 1 {
+		t.Fatalf("same session claimed %d times", wins.Load())
+	}
+	info, err := os.Stat(marker)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("claim is not private: info=%v err=%v", info, err)
+	}
+	if claimExtractionSession(filepath.Join(t.TempDir(), "missing", "session")) {
+		t.Fatal("failed marker creation allowed extraction")
+	}
+}
