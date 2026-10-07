@@ -4,6 +4,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -93,5 +94,44 @@ func TestMemberRoleGateAndRevocation(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("revoked admin GET /graph.json: want 401, got %d", resp.StatusCode)
+	}
+}
+
+// Curator is a known browser identity at member rank, without administrative
+// permissions. Exercise the actual browser bridge and connection surfaces that
+// reject an unrecognised role, not only the rank helper.
+func TestCuratorBrowserIdentityRetainsMemberAccessWithoutAdministration(t *testing.T) {
+	s, _, _ := connectionServer(t)
+	alive := true
+	s.SetMemberAuth(func(string) (int64, string, bool) { return 0, "", false }, func(int64) map[string]bool { return nil }, nil,
+		func(id int64) (string, int64, bool) { return "curator", 123, alive && id == 7 })
+	bridge := BrowserSignIn{LoginURL: connectionOrigin + "/auth/oidc/login", Resolve: func(r *http.Request) (int64, string, bool) {
+		c, err := r.Cookie("fixture_team")
+		return 7, "curator@example.test", err == nil && c.Value == "fixture-session"
+	}, Clear: func(http.ResponseWriter) {}}
+	if err := s.SetBrowserSignIn(bridge); err != nil {
+		t.Fatal(err)
+	}
+	h := s.Handler()
+	d := connectionDevice(t, h, "full")
+	cookie := &http.Cookie{Name: "fixture_team", Value: "fixture-session"}
+	w := connectionCall(t, h, "GET", "/api/connect/request?user_code="+d.UserCode, nil, cookie, "", "")
+	var details map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &details); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != 200 || details["account"] != "curator@example.test (curator)" {
+		t.Fatalf("curator browser refused: %d %s", w.Code, w.Body.String())
+	}
+	for _, tc := range []struct{ method, path string }{{"PUT", "/api/config"}, {"POST", "/api/reindex"}, {"POST", "/api/pending/promote"}, {"POST", "/api/pending/discard"}} {
+		w = connectionCall(t, h, tc.method, tc.path, map[string]any{"updates": map[string]any{}}, cookie, "", connectionOrigin)
+		if w.Code != 403 {
+			t.Fatalf("curator administration %s: %d %s", tc.path, w.Code, w.Body.String())
+		}
+	}
+	alive = false
+	w = connectionCall(t, h, "GET", "/api/connect/request?user_code="+d.UserCode, nil, cookie, "", "")
+	if w.Code != 401 {
+		t.Fatalf("revoked curator retained browser access: %d", w.Code)
 	}
 }

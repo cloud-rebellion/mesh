@@ -47,7 +47,9 @@ func newMemberAuth(verify func(string) (int64, string, bool), scopesFor func(int
 	return &memberAuth{verify: verify, scopesFor: scopesFor, pathsFor: pathsFor, roleFor: roleFor, key: stableMemberKey()}
 }
 
-// hub role order (owner > admin > member > viewer). Duplicated minimally here because
+// Hub role order: owner > admin > member/curator > viewer. Curation is an
+// explicit pro capability and does not give curator browser administration.
+// Duplicated minimally here because
 // internal/web is the open core and must not import the pro internal/hub package; the
 // pro side hands us the role string via roleFor and we only need to rank it.
 func roleRank(role string) int {
@@ -56,7 +58,7 @@ func roleRank(role string) int {
 		return 4
 	case "admin":
 		return 3
-	case "member":
+	case "member", "curator":
 		return 2
 	case "viewer":
 		return 1
