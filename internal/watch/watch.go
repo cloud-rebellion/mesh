@@ -148,8 +148,20 @@ const DefaultFullReconcile = 5 * time.Minute
 // once at startup so the index reflects disk from the first moment. Run blocks;
 // callers typically run it in a goroutine alongside their main loop.
 func Run(ctx context.Context, opt Options) error {
+	return runWithDirectoryDiscovery(ctx, opt, vault.DirsContext)
+}
+
+// The read-only discovery seam tests cancellation before startup publication
+// without mutable global hooks or an actual unhealthy network filesystem.
+func runWithDirectoryDiscovery(ctx context.Context, opt Options, discover func(context.Context, string) ([]string, error)) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if opt.OnReindex == nil {
 		return errors.New("watch: OnReindex is required")
+	}
+	if ctx.Err() != nil {
+		return nil
 	}
 	if opt.Debounce <= 0 {
 		opt.Debounce = defaultDebounce
@@ -167,8 +179,14 @@ func Run(ctx context.Context, opt Options) error {
 		return err
 	}
 	defer w.Close()
-	if err := addWatches(w, opt.Root, logf); err != nil {
+	if err := addWatchesContext(ctx, w, opt.Root, logf, discover); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
+	}
+	if ctx.Err() != nil {
+		return nil
 	}
 
 	// Reflect disk from the moment we start (bootstraps an empty index too). Startup is
@@ -206,7 +224,12 @@ func Run(ctx context.Context, opt Options) error {
 				// A new subdirectory: kqueue/inotify watch one dir at a time, so
 				// add it (and any children) to the watch set, then reconcile in
 				// case files landed inside before the watch was in place.
-				_ = addWatches(w, opt.Root, logf)
+				if err := addWatchesContext(ctx, w, opt.Root, logf, discover); err != nil {
+					if ctx.Err() != nil {
+						return nil
+					}
+					logf("watch directory discovery: %v", err)
+				}
 				pending.change("")
 				resetTimer(debounce, opt.Debounce)
 			case ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 && watched(w, ev.Name):
@@ -270,20 +293,23 @@ func reconcile(opt Options, logf func(string, ...any), p Pass) bool {
 	return true
 }
 
-// addWatches (re)adds a watch on every indexed directory under root. fsnotify
+// addWatchesContext (re)adds a watch on every indexed directory under root. fsnotify
 // dedupes repeat adds, so calling it again after a new directory appears simply
 // picks up the newcomer. It honors the same skip rules the indexer walks with.
-func addWatches(w *fsnotify.Watcher, root string, logf func(string, ...any)) error {
-	dirs, err := vault.Dirs(root)
+func addWatchesContext(ctx context.Context, w *fsnotify.Watcher, root string, logf func(string, ...any), discover func(context.Context, string) ([]string, error)) error {
+	dirs, err := discover(ctx, root)
 	if err != nil {
 		return err
 	}
 	for _, d := range dirs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := w.Add(d); err != nil {
 			logf("watch add %s: %v", d, err)
 		}
 	}
-	return nil
+	return ctx.Err()
 }
 
 // watched reports whether path is currently in the fsnotify watch set (i.e. a

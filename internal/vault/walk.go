@@ -146,8 +146,52 @@ func WalkConflictSiblings(root string) ([]string, error) {
 // and inotify watch a single directory at a time, not a tree, so it adds one
 // watch per indexed directory and skips the same noise Walk does.
 func Dirs(root string) ([]string, error) {
+	return DirsContext(context.Background(), root)
+}
+
+// DirsContext follows WalkContext's isolated read-only traversal contract. A
+// cancelled caller receives no partial directory set; an in-flight OS read may
+// finish later, without registering watches or mutating caller-owned state.
+func DirsContext(ctx context.Context, root string) ([]string, error) {
+	return dirsContext(ctx, root, filepath.WalkDir)
+}
+
+func dirsContext(ctx context.Context, root string, walkDir func(string, fs.WalkDirFunc) error) ([]string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if ctx.Done() == nil {
+		return scanDirsContext(ctx, root, walkDir)
+	}
+	type result struct {
+		paths []string
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		paths, err := scanDirsContext(ctx, root, walkDir)
+		done <- result{paths: paths, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case got := <-done:
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return got.paths, got.err
+	}
+}
+
+func scanDirsContext(ctx context.Context, root string, walkDir func(string, fs.WalkDirFunc) error) ([]string, error) {
 	var out []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err := walkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			return err
 		}
@@ -160,5 +204,11 @@ func Dirs(root string) ([]string, error) {
 		out = append(out, path)
 		return nil
 	})
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if err != nil {
+		return nil, err
+	}
 	return out, err
 }
