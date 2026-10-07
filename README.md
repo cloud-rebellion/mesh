@@ -730,6 +730,32 @@ mesh join https://mesh.example.com <invite-token> my-vault   # clone, no git nee
 mesh sync my-vault                                    # push yours, pull theirs
 ```
 
+Interactive `mesh join` opens the joined vault in your browser after the durable
+join and index receipt. For scripts, `--no-open` skips the browser handoff;
+noninteractive joins also skip it by default. Use `--open` to request it explicitly.
+A browser failure leaves the completed join intact: retry `mesh open my-vault`,
+never the redeemed invitation.
+
+```sh
+mesh open my-vault         # open this device's joined vault in the browser
+mesh team my-vault         # open its team settings
+mesh open my-vault --print-url  # private manual fallback when no browser opens
+```
+
+These commands read only this vault's existing private device credential and
+matching sync identity. They send it as a Bearer header to the saved HTTPS hub,
+then open a same-origin two-minute one-use confirmation link. They do not grant a
+new role or create another device. Confirm the displayed identity in the browser;
+no long-lived credential is copied into a URL or printed. The URL is printed only
+with explicit `--print-url`; keep that short-lived link private. Redirects, foreign
+origins, invalid/expired responses and mismatched local vault identities are
+refused. An older hub must be updated to support the handoff. Unix requires an
+owned vault without group/world write access, private `.mesh` directory (0700)
+and credential/sync files (0600), without extended access ACLs; Windows requires
+current-user ownership and an ACL restricted to that user, SYSTEM and
+Administrators. Browser opening uses a native executable with separate arguments
+and a limited environment. Headless computers can use the manual fallback.
+
 Reconcile-first: `mesh sync` is a three-way merge. Two people adding blocks to the
 same page auto-merge; a true overwrite of the same lines keeps the hub version and
 saves yours to a `*.sync-conflict-*.md` sibling to resolve by hand. Long note names
@@ -890,6 +916,7 @@ Team sync. These are the client side and ship here, but they all talk to a
 | Command | Purpose |
 |---|---|
 | `mesh join <hub> <invite> [vault]` | Join a team vault and clone it (no git). Needs a hub. |
+| `mesh open [vault]` / `mesh team [vault]` | Open a joined vault or its team settings through a private, short-lived browser confirmation. `--print-url` is an explicit manual fallback. |
 | `mesh sync [vault]` | Reconcile with the hub (push local edits, pull teammates'). Needs a hub. |
 | `mesh conflicts <list\|diff\|resolve>` | Review and resolve local sync-conflict siblings. Needs a hub. |
 | `mesh curator <log\|show\|accept>` | Review what the BYOAI sync-curator merged, and failed on, across the team. Needs a hub plus the commercial curator. |

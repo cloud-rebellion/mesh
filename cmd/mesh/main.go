@@ -85,6 +85,7 @@ func rootCmd() *cobra.Command {
 		mcpCmd(),
 		watchCmd(),
 		joinCmd(),
+		browserCmd("vault"), browserCmd("team"),
 		syncCmd(),
 		conflictsCmd(),
 		curatorCmd(),
@@ -2560,27 +2561,7 @@ func watchCmd() *cobra.Command {
 	c.Flags().DurationVar(&fullReconcile, "full-reconcile", watch.DefaultFullReconcile, "how often the safety net escalates to the authoritative content-hash pass over every note")
 	return c
 }
-func joinCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "join <hub-url> <invite-token> [vault]",
-		Short: "Join a team vault: redeem an invite and clone it, no git needed",
-		Long:  "Redeem a one-time invite from a mesh-hub, store the client token under <vault>/.mesh, fail closed if the team embedding config conflicts with yours, then clone the vault via a reconcile. After this, edit locally and run mesh sync.",
-		Args:  cobra.RangeArgs(2, 3),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			hubURL, invite := args[0], args[1]
-			vaultDir := "."
-			if len(args) == 3 {
-				vaultDir = args[2]
-			}
-			sum, err := meshclient.JoinVault(hubURL, invite, vaultDir)
-			if err != nil {
-				return err
-			}
-			return finishJoin(cmd.Context(), vaultDir, sum, reconcileOneShotThroughOwner)
-		},
-	}
-	return c
-}
+func joinCmd() *cobra.Command { return joinCmdWithBrowser(defaultJoinBrowserDeps()) }
 
 type joinIndexReconcile func(context.Context, string, string) error
 
@@ -2599,6 +2580,7 @@ func finishJoin(ctx context.Context, vaultDir string, sum meshclient.Summary, re
 	}
 	fmt.Println("next:")
 	fmt.Println("  mesh sync " + shellpath.Quote(vaultDir) + "                       # push your edits, pull teammates'")
+	fmt.Printf("  mesh open %s                       # browse your joined vault\n", shellpath.Quote(vaultDir))
 	fmt.Printf("  mesh mcp --vault %s --watch       # point your agent at the vault\n", shellpath.Quote(vaultDir))
 	return nil
 }
