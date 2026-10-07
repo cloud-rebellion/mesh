@@ -13,7 +13,15 @@ import (
 // callers must still confirm publication through the tool result and readback.
 func WritebackToolCall(name string, input json.RawMessage) bool {
 	name = strings.TrimPrefix(name, "functions.")
-	name = strings.TrimPrefix(name, "mcp__mesh__")
+	if strings.HasPrefix(name, "mcp__") {
+		// MCP server names are configured by the user (for example mesh-corpus).
+		// Match the exact tool name after its namespace, never a prose substring.
+		separator := strings.LastIndex(name, "__")
+		if separator <= len("mcp__") {
+			return false // no server name or no tool separator
+		}
+		name = name[separator+2:]
+	}
 	switch name {
 	case "mesh_append_note", "mesh_write_entity":
 		return true
