@@ -40,6 +40,32 @@ func fixtureNote(title string) map[string]any {
 	return map[string]any{"title": title, "type": "note", "summary": "Synthetic finding used to exercise publication infrastructure.", "sections": fixtureSections("note")}
 }
 
+func TestTemplateSchemaAllowsBoundedProductConnections(t *testing.T) {
+	s := newTestServer(t)
+	result, rpcErr := s.toolTemplate(mustJSON(map[string]any{"template": "entity"}), false)
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	var response struct {
+		Schema struct {
+			Properties map[string]struct {
+				MaxItems int `json:"maxItems"`
+			} `json:"properties"`
+		} `json:"authoring_schema"`
+	}
+	if err := json.Unmarshal([]byte(rawContentText(t, result)), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Schema.Properties["related"].MaxItems != 256 {
+		t.Fatal("retrieved schema still prevents connected product updates")
+	}
+	for _, field := range []string{"tags", "collections", "supersedes"} {
+		if response.Schema.Properties[field].MaxItems != 32 {
+			t.Fatalf("unrelated %s bound changed", field)
+		}
+	}
+}
+
 func TestPurposeSpecificAuthoringJourneys(t *testing.T) {
 	s := newTestServer(t)
 	startOwner(t, s.vaultRoot)

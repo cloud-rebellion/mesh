@@ -5,13 +5,58 @@ package vault
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestPublishedUpdateRetainsMoreThan32RelatedNotes(t *testing.T) {
+	root := t.TempDir()
+	spec := completeSpec(t, TypeEntity, "Connected product overview")
+	for i := 0; i < 34; i++ {
+		spec.Related = append(spec.Related, fmt.Sprintf("existing-note-%d", i))
+	}
+	created, err := CreateNote(root, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, _ := os.ReadFile(created.Path)
+	prepared, err := NoteSnapshotContext(context.Background(), root, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(prepared.Spec.Related, spec.Related) {
+		t.Fatal("preparation dropped existing product connections")
+	}
+	edit := prepared.Spec
+	edit.Related = append(edit.Related, "current-release")
+	edit.Sections["current_state"] += " See the linked current release for its verification and limits."
+	updated, err := CreateNote(root, edit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := NoteSnapshotContext(context.Background(), root, updated.ID)
+	if err != nil || !reflect.DeepEqual(after.Spec.Related, edit.Related) || updated.ID != created.ID || updated.Path != created.Path {
+		t.Fatalf("update lost identity or product connections: %v", err)
+	}
+	archived, err := os.ReadFile(filepath.Join(root, ".mesh", "note-history", created.ID, prepared.Revision+".md"))
+	if err != nil || string(archived) != string(original) {
+		t.Fatal("update did not retain the exact original")
+	}
+	tooMany := spec
+	tooMany.Related = make([]string, 257)
+	for i := range tooMany.Related {
+		tooMany.Related[i] = fmt.Sprintf("related-note-%d", i)
+	}
+	if _, err := NormalizeSpec(tooMany); err == nil {
+		t.Fatal("unbounded related-note input accepted")
+	}
+}
 
 func TestPublishedUpdatePreservesIdentityHistoryAndProvenance(t *testing.T) {
 	fixedNow(t)

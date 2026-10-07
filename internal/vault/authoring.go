@@ -16,6 +16,9 @@ const (
 	MaxAuthoringBytes = 64 << 10
 	MaxCodeBytes      = 16 << 10
 	MaxAuthoringList  = 32
+	// Product overviews can retain many supported connections. Keep relationship
+	// input bounded separately from compact scope, Topic and collection lists.
+	MaxAuthoringRelated = 256
 )
 
 // NormalizeSpec resolves template/type/version and copies author-owned collections.
@@ -58,7 +61,10 @@ func NormalizeSpec(in NewNoteSpec) (NewNoteSpec, error) {
 		return spec, fmt.Errorf("%w: summary: %v", ErrInvalidSpec, err)
 	}
 	spec.Status = strings.ToLower(strings.TrimSpace(in.Status))
-	for name, list := range map[string][]string{"related": in.Related, "supersedes": in.Supersedes, "scope": in.Scope} {
+	if len(in.Related) > MaxAuthoringRelated {
+		return spec, fmt.Errorf("%w: related exceeds %d entries", ErrInvalidSpec, MaxAuthoringRelated)
+	}
+	for name, list := range map[string][]string{"supersedes": in.Supersedes, "scope": in.Scope} {
 		if len(list) > MaxAuthoringList {
 			return spec, fmt.Errorf("%w: %s exceeds %d entries", ErrInvalidSpec, name, MaxAuthoringList)
 		}

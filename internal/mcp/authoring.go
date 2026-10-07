@@ -50,6 +50,7 @@ type authoringArgs struct {
 func authoringProperties() map[string]any {
 	str := map[string]any{"type": "string"}
 	list := map[string]any{"type": "array", "items": str, "maxItems": 32}
+	related := map[string]any{"type": "array", "items": str, "maxItems": vault.MaxAuthoringRelated}
 	return map[string]any{
 		"type": str, "title": str, "template": str, "draft_id": str, "draft_revision": str, "update_id": str, "update_revision": str, "verified_at": str,
 		"template_version": map[string]any{"type": "integer", "minimum": 1},
@@ -59,7 +60,7 @@ func authoringProperties() map[string]any {
 			"type": "object", "required": []string{"template", "id", "fields"}, "additionalProperties": false,
 			"properties": map[string]any{"template": str, "version": map[string]any{"type": "integer", "minimum": 1}, "id": str, "fields": map[string]any{"type": "object", "additionalProperties": str}},
 		}},
-		"collections": list, "related": list, "supersedes": list, "tags": list,
+		"collections": list, "related": related, "supersedes": list, "tags": list,
 		"status": str, "severity": str, "author": str, "source": str,
 		"source_url": str, "confidence": str, "review_by": str, "scope": str,
 	}
