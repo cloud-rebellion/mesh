@@ -476,7 +476,7 @@ func hooksCmd() *cobra.Command {
 		Short: "Set up Claude Code session hooks: read Mesh at session start, nudge write-back at end",
 		Long:  "Installs Claude Code SessionStart + Stop hooks into a project's .claude/settings.json so an agent starts every session having read the mesh (SessionStart -> mesh orient) and is reminded once to write back what it learned before finishing (Stop -> mesh hooks stop-check). These are session-lifecycle hooks, not git pre/post-push hooks.",
 	}
-	c.AddCommand(hooksInstallCmd(), hooksUninstallCmd(), hooksStopCheckCmd())
+	c.AddCommand(hooksInstallCmd(), hooksUninstallCmd(), hooksStopCheckCmd(), hooksCodexStopCheckCmd())
 	return c
 }
 

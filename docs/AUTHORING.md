@@ -203,6 +203,57 @@ The old `mesh structure --fill-bodies` operation is retired. It refuses both pre
 and apply because shorthand cannot establish incident causes, impact or conclusions.
 Use a reconstructed purpose-specific candidate in a reviewed migration preview.
 
+## Codex same-agent Stop reminder
+
+`mesh hooks codex-stop-check` accepts the documented Codex command-hook JSON on
+stdin. It returns `decision: "block"` with a compact writeback reminder to the
+current agent once per valid session/turn pair. A `stop_hook_active` continuation
+is allowed immediately. An atomic, empty, private temporary claim prevents
+concurrent Stop events from repeating the reminder; removal of temporary claims
+can permit a later reminder, so Codex's continuation flag is also required.
+Malformed or oversized input, missing identities and unavailable claim storage
+allow completion without exposing hook input. Completion-only children marked
+`MESH_LLM_CHILD` return before reading input.
+
+The reminder uses the agent's existing authenticated Mesh tools. It does not open
+the transcript, interpret nested tool code, infer publication from a tool request,
+launch a child model, or extract and publish notes itself. Codex's transcript
+format is unstable, and opaque `exec` records are not durable write receipts.
+The agent first checks whether the task outcome already has a confirmed Mesh
+receipt and may finish without duplicating it. If Mesh is unavailable, it reports
+the specific blocker and pending writeback without claiming success or retrying
+indefinitely. Current workspace writeback instructions remain authoritative: an
+agent may finish without a new note only when those instructions permit it and
+no task outcome needs recording. This adapter does not satisfy independent
+extraction acceptance.
+
+After a release containing the command is installed, a reviewed command hook can
+be added to the user's or trusted project's Codex `hooks.json`, preserving the
+other hooks. Use the reviewed absolute Mesh binary path and a short timeout:
+
+```json
+{
+  "hooks": {
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "\"/absolute/path/to/reviewed/mesh\" hooks codex-stop-check",
+        "timeout": 5
+      }]
+    }]
+  }
+}
+```
+
+Open `/hooks` in Codex to inspect and approve the exact non-managed definition;
+project hooks also require the project's normal trust. Reload or start a new
+ordinary session, inspect the effective hook, and verify one reminder plus a
+non-blocking continuation and confirmed normal Mesh writeback. Configuration and
+trust are separate activation steps, not a side effect of this command. The
+current `mesh hooks install` writes Claude settings, while `mesh install --client
+codex` registers MCP; neither installs or approves this Codex hook. There is no
+extractor flag on the Codex adapter. See the [Codex hooks documentation](https://learn.chatgpt.com/docs/hooks).
+
 ## Rollout and acceptance
 
 Deploy with `MESH_AUTHORING_MODE=readers-only`, upgrade all readers, and verify legacy
