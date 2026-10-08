@@ -40,6 +40,9 @@ type NewNoteSpec struct {
 	UpdatePath      string            `json:"-"` // internal authorized vault-relative target
 	UpdateID        string            `json:"update_id,omitempty"`
 	UpdateRevision  string            `json:"update_revision,omitempty"`
+	// Historical tag compatibility is derived from current stored bytes, never
+	// accepted from authoring JSON. Publication rereads the source revision.
+	historicalTags *historicalTagFence
 	// Deprecated source aliases keep old callers compiling. The modern writer
 	// rejects them; historical content is read through ReadLegacy.
 	Do       string   `json:"do,omitempty"`

@@ -21,6 +21,13 @@ func TestCLIUpdatePreparesValidatesAndPublishesSameIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	original, _ := os.ReadFile(first.Path)
+	// Model a reviewed migrated note. CLI JSON must retain a dotted stored tag
+	// without depending on private in-memory normalization state.
+	original = []byte(strings.Replace(string(original), "---\n", "---\ntags: [oauth-2.1]\n", 1))
+	if err := os.WriteFile(first.Path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	first.Revision = vault.ContentRevision(original)
 	var out bytes.Buffer
 	cmd := rootCmd()
 	cmd.SetOut(&out)
@@ -61,7 +68,7 @@ func TestCLIUpdatePreparesValidatesAndPublishesSameIdentity(t *testing.T) {
 			continue
 		}
 		fm, _, err := vault.ParseFrontmatter(data)
-		if err != nil || fm.ID != first.ID || fm.Title != spec.Title || fm.Author != "original" || fm.UpdatedBy != "editor" || fm.UpdatedAgent != "mesh-cli" {
+		if err != nil || fm.ID != first.ID || fm.Title != spec.Title || fm.Author != "original" || fm.UpdatedBy != "editor" || fm.UpdatedAgent != "mesh-cli" || len(fm.Tags) != 1 || fm.Tags[0] != "oauth-2.1" {
 			t.Fatalf("CLI metadata incorrect: %+v %v", fm, err)
 		}
 		if !strings.Contains(out.String(), `"updated":true`) {

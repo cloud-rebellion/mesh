@@ -74,20 +74,22 @@ func PublishedNoteSnapshot(rel, id string, data []byte) (*NoteSnapshot, error) {
 		return nil, fmt.Errorf("%w: body has content outside the canonical authoring representation; reconcile it in a reviewed draft before updating", ErrInvalidSpec)
 	}
 	revision := ContentRevision(data)
-	spec, err := NormalizeSpec(NewNoteSpec{
+	before := &NoteSnapshot{Path: rel, Revision: revision, Content: data, Frontmatter: fm}
+	spec, err := NormalizeUpdateSpec(NewNoteSpec{
 		UpdateID: id, UpdateRevision: revision, UpdatePath: rel,
 		Type: fm.Type, Title: fm.Title, Template: fm.Template, TemplateVersion: fm.TemplateVersion,
 		Summary: authored.Summary, Sections: authored.Sections, Blocks: fm.BlockContents,
 		Collections: fm.Collections, Related: fm.Related, Supersedes: fm.Supersedes, Tags: fm.Tags,
 		Status: fm.Status, Severity: fm.Severity, Confidence: fm.Confidence, ReviewBy: fm.ReviewBy,
 		Scope: fm.EffectiveScopes(),
-	})
+	}, before)
 	if err != nil {
 		return nil, err
 	}
 	// Verification blocks remain historical evidence. verified_at is deliberately
 	// not prefilled: an edited revision requires an explicit recorded verification.
-	return &NoteSnapshot{Path: rel, Revision: revision, Content: data, Frontmatter: fm, Spec: spec}, nil
+	before.Spec = spec
+	return before, nil
 }
 
 func prepareUpdateContext(ctx context.Context, root string, spec NewNoteSpec) (*PreparedNote, error) {
@@ -101,6 +103,10 @@ func prepareUpdateContext(ctx context.Context, root string, spec NewNoteSpec) (*
 	if spec.UpdateRevision == "" || spec.UpdateRevision != before.Revision {
 		return nil, fmt.Errorf("%w: note changed or revision missing; prepare the current note again and reconcile edits", ErrInvalidSpec)
 	}
+	spec, err = NormalizeUpdateSpec(spec, before)
+	if err != nil {
+		return nil, err
+	}
 	if strings.EqualFold(strings.TrimSpace(spec.Status), "draft") {
 		return nil, fmt.Errorf("%w: published notes cannot be replaced with drafts; save incomplete work as a separate linked draft", ErrInvalidSpec)
 	}
@@ -109,6 +115,11 @@ func prepareUpdateContext(ctx context.Context, root string, spec NewNoteSpec) (*
 		return nil, err
 	}
 	old := before.Frontmatter
+	if spec.retainsHistoricalTags() {
+		// General new-note rendering normalizes tags. An unchanged historical
+		// list must retain its exact spelling, order and duplicate entries.
+		plan.fm.Tags = slices.Clone(old.Tags)
+	}
 	a, b := append([]string{}, old.EffectiveScopes()...), append([]string{}, plan.fm.EffectiveScopes()...)
 	slices.Sort(a)
 	slices.Sort(b)

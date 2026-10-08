@@ -209,7 +209,7 @@ func (s *Server) authoringSpec(ctx context.Context, a authoringArgs, forceType s
 	if strings.TrimSpace(a.Source) == "" {
 		a.Source = "agent"
 	}
-	spec, err := vault.NormalizeSpec(vault.NewNoteSpec{
+	input := vault.NewNoteSpec{
 		Type: vault.NoteType(a.Type), Title: a.Title, Template: a.Template, TemplateVersion: a.TemplateVersion,
 		DraftID: a.DraftID, DraftRevision: a.DraftRevision, VerifiedAt: a.VerifiedAt,
 		UpdateID: a.UpdateID, UpdateRevision: a.UpdateRevision,
@@ -217,7 +217,14 @@ func (s *Server) authoringSpec(ctx context.Context, a authoringArgs, forceType s
 		Related: a.Related, Supersedes: a.Supersedes, Tags: a.Tags, Status: a.Status,
 		Severity: a.Severity, Author: a.Author, Agent: agent, By: agent, Source: a.Source,
 		SourceURL: a.SourceURL, Confidence: a.Confidence, ReviewBy: a.ReviewBy, Scope: scopes,
-	})
+	}
+	var spec vault.NewNoteSpec
+	var err error
+	if update != nil {
+		spec, err = vault.NormalizeUpdateSpec(input, update)
+	} else {
+		spec, err = vault.NormalizeSpec(input)
+	}
 	if err != nil {
 		return spec, &rpcError{Code: codeInvalidParams, Message: err.Error()}
 	}

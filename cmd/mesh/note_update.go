@@ -36,6 +36,14 @@ func updateCmd() *cobra.Command {
 			return fmt.Errorf("update_id must match the requested ID; prepare the current note first")
 		}
 		spec.Agent, spec.By, spec.Author = "mesh-cli", "mesh-cli", by
+		before, err := vault.NoteSnapshotContext(ctx, root, spec.UpdateID)
+		if err != nil {
+			return err
+		}
+		spec, err = vault.NormalizeUpdateSpec(spec, before)
+		if err != nil {
+			return err
+		}
 		if err := vault.ValidateSpec(spec); err != nil {
 			return err
 		}

@@ -156,7 +156,11 @@ func PreviewAuthoringMigration(ctx context.Context, root string, requests []Migr
 			return nil, fmt.Errorf("%s: migration cannot bump verification", rel)
 		}
 		spec.VerifiedAt = ""
-		normalized, err := NormalizeSpec(spec)
+		if spec.Tags != nil && !reflect.DeepEqual(spec.Tags, []string(fm.Tags)) {
+			return nil, fmt.Errorf("%s: migration cannot change preserved tags", rel)
+		}
+		spec.Tags = append([]string(nil), fm.Tags...)
+		normalized, err := normalizeHistoricalSpec(spec, fm.Tags, "", "", true)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", rel, err)
 		}
@@ -327,6 +331,10 @@ func validateMigrationInvariant(original, candidate string) error {
 		Summary: content.Summary, Sections: content.Sections, Collections: []string(modern.Collections), Tags: []string(modern.Tags)}
 	for _, block := range content.Blocks {
 		spec.Blocks = append(spec.Blocks, BlockSpec{Template: block.Template, Version: block.Version, ID: block.ID, Fields: block.Fields})
+	}
+	spec, err = normalizeHistoricalSpec(spec, old.Tags, "", "", true)
+	if err != nil {
+		return fmt.Errorf("migration candidate violates authoring contract: %w", err)
 	}
 	if err := ValidateSpec(spec); err != nil {
 		return fmt.Errorf("migration candidate violates authoring contract: %w", err)

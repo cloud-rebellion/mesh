@@ -74,13 +74,17 @@ func NormalizeSpec(in NewNoteSpec) (NewNoteSpec, error) {
 			return spec, fmt.Errorf("%w: %s exceeds %d entries", ErrInvalidSpec, name, MaxAuthoringList)
 		}
 		for _, id := range list {
-			if !authoringID(id) {
+			if !authoringID(id) && !(name == "tags" && in.retainsHistoricalTags() && historicalTagID(id)) {
 				return spec, fmt.Errorf("%w: invalid %s id %q; use an existing slug ID, not a path or wiki link", ErrInvalidSpec, name, id)
 			}
 		}
 	}
 	spec.Collections = uniqueStrings(in.Collections)
-	spec.Tags = uniqueStrings(in.Tags)
+	if in.retainsHistoricalTags() {
+		spec.Tags = append([]string(nil), in.Tags...)
+	} else {
+		spec.Tags = uniqueStrings(in.Tags)
+	}
 	spec.Related = append([]string(nil), in.Related...)
 	spec.Supersedes = append([]string(nil), in.Supersedes...)
 	spec.Scope = append([]string(nil), in.Scope...)
