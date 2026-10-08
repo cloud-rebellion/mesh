@@ -1,0 +1,16 @@
+{
+  "name": "mesh-desktop",
+  "productName": "Mesh",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "Native Mesh shell with an isolated bundled Go engine",
+  "main": "src/main.cjs",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "test": "node --test test/*.test.cjs",
+    "start": "electron .",
+    "package:macos": "node scripts/package-macos.mjs"
+  },
+  "devDependencies": { "electron": "44.7.0", "@electron/packager": "20.3.0", "@electron/fuses": "2.1.3" }
+}

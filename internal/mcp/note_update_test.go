@@ -200,3 +200,111 @@ func TestPublishedUpdateRetainsEveryScopeWithoutDefaultingToOne(t *testing.T) {
 		t.Fatalf("shared audience was changed: %+v %v", fm, err)
 	}
 }
+
+func TestExplicitDraftPreparationCompletesWithRevisionAndAudienceFences(t *testing.T) {
+	s := newTestServer(t)
+	startOwner(t, s.vaultRoot)
+	ctx := WithLocalOperator(context.Background())
+	saved, rerr := s.toolAuthorNote(ctx, mustJSON(map[string]any{"action": "draft", "note": authoringArgs{Title: "Draft marketing evidence", Template: "plan", Summary: "Evidence remains partial.", Sections: map[string]string{"objective": "Reach a synthetic audience."}, Tags: []string{"marketing"}}}))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	first := toolJSON(t, saved)
+	id := first["id"].(string)
+	if _, rerr = s.toolPrepareUpdate(ctx, mustJSON(map[string]any{"id": id})); rerr == nil {
+		t.Fatal("default published contract accepted a draft")
+	}
+	prepared, rerr := s.toolPrepareUpdate(ctx, mustJSON(map[string]any{"id": id, "draft": true}))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	p := toolJSON(t, prepared)
+	note := p["note"].(map[string]any)
+	if note["draft_id"] != id || note["draft_revision"] != first["revision"] || note["update_id"] != nil || note["verified_at"] != nil || p["draft"] != true {
+		t.Fatal("draft revision/lifecycle omitted")
+	}
+	sections := note["sections"].(map[string]any)
+	template, _ := vault.TemplateFor("plan", 1)
+	for _, section := range template.Sections {
+		if section.Key != "objective" {
+			sections[section.Key] = "Synthetic fixture context; campaign outcomes remain unverified."
+		}
+	}
+	note["status"] = "active"
+	done, rerr := s.toolAuthorNote(ctx, mustJSON(map[string]any{"action": "publish", "note": note}))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if result := toolJSON(t, done); result["id"] != id || result["path"] != first["path"] {
+		t.Fatal("draft changed stable identity/file")
+	}
+	if _, rerr = s.toolAuthorNote(ctx, mustJSON(map[string]any{"action": "publish", "note": note})); rerr == nil {
+		t.Fatal("stale draft object republished")
+	}
+	if _, rerr = s.toolPrepareUpdate(ctx, mustJSON(map[string]any{"id": id, "draft": true})); rerr == nil {
+		t.Fatal("published note remained editable as draft")
+	}
+}
+
+func TestDraftPreparationRefusesReadOnlyForeignCurrentScopeAndMissing(t *testing.T) {
+	s := newTestServer(t)
+	startOwner(t, s.vaultRoot)
+	saved, rerr := s.toolAuthorNote(context.Background(), mustJSON(map[string]any{"action": "draft", "note": authoringArgs{Title: "Scoped draft evidence", Template: "finding", Summary: "Partial fixture evidence."}}))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	first := toolJSON(t, saved)
+	args := mustJSON(map[string]any{"id": first["id"], "draft": true})
+	viewer := WithWriteCapability(context.Background(), false)
+	if _, rerr = s.toolPrepareUpdate(viewer, args); rerr == nil {
+		t.Fatal("viewer obtained editable draft")
+	}
+	foreign := WithScopeFilter(context.Background(), &ScopeFilter{AllowedRead: map[string]bool{"finance": true}, CanWrite: func(string) bool { return true }})
+	if _, rerr = s.toolPrepareUpdate(foreign, args); rerr == nil {
+		t.Fatal("foreign indexed scope leaked draft")
+	}
+	own := WithScopeFilter(context.Background(), &ScopeFilter{AllowedRead: map[string]bool{"dev": true}, CanWrite: func(s string) bool { return s == "dev" }})
+	file := filepath.Join(s.vaultRoot, first["path"].(string))
+	raw, _ := os.ReadFile(file)
+	raw = []byte(strings.Replace(string(raw), "---\n", "---\nscope: [finance]\n", 1))
+	if os.WriteFile(file, raw, 0600) != nil {
+		t.Fatal("fixture write failed")
+	}
+	if _, rerr = s.toolPrepareUpdate(own, args); rerr == nil {
+		t.Fatal("current-file tightening ignored")
+	}
+	if _, rerr = s.toolPrepareUpdate(context.Background(), mustJSON(map[string]any{"id": "missing", "draft": true})); rerr == nil {
+		t.Fatal("missing draft fabricated")
+	}
+}
+
+func TestDraftPreparationKeepsImportedDataBoundaryAndExtraProse(t *testing.T) {
+	s := newTestServer(t)
+	startOwner(t, s.vaultRoot)
+	saved, rerr := s.toolAuthorNote(context.Background(), mustJSON(map[string]any{"action": "draft", "note": authoringArgs{Title: "Imported draft fixture", Template: "finding", Summary: "Imported partial observations."}}))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	first := toolJSON(t, saved)
+	file := filepath.Join(s.vaultRoot, first["path"].(string))
+	raw, _ := os.ReadFile(file)
+	raw = []byte(strings.Replace(string(raw), "source: agent", "source: import:fixture", 1))
+	if os.WriteFile(file, raw, 0600) != nil {
+		t.Fatal("fixture write failed")
+	}
+	args := mustJSON(map[string]any{"id": first["id"], "draft": true})
+	result, rerr := s.toolPrepareUpdate(context.Background(), args)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	text := rawContentText(t, result)
+	if !strings.HasPrefix(text, untrustedOpenPrefix) || !strings.HasSuffix(text, untrustedClose) || !strings.Contains(text, "draft_revision") {
+		t.Fatal("imported draft became trusted instructions")
+	}
+	if os.WriteFile(file, []byte(strings.Replace(string(raw), "# Imported draft fixture", "Extra observed preamble outside the template.\n\n# Imported draft fixture", 1)), 0600) != nil {
+		t.Fatal("fixture write failed")
+	}
+	if _, rerr = s.toolPrepareUpdate(context.Background(), args); rerr == nil {
+		t.Fatal("extra draft prose dropped")
+	}
+}

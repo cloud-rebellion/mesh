@@ -35,6 +35,7 @@ var assetsFS embed.FS
 
 // Server serves the localhost graph viewer + app shell for one vault.
 type Server struct {
+	retrievalOptions retrieve.ConstructionOptions
 	vaultRoot        string
 	store            *index.Store
 	owner            *index.OwnerLock // non-nil only for NewOwningServer; released by Close
@@ -272,9 +273,19 @@ func NewServerContext(ctx context.Context, vaultRoot string) (*Server, error) {
 	return newReadOnlyServerContext(ctx, vaultRoot, nil)
 }
 
+// NewServerWithRetrievalOptions retains the same read-only index and access
+// boundaries, with an explicit immutable retrieval choice for native callers.
+func NewServerWithRetrievalOptions(ctx context.Context, vaultRoot string, options retrieve.ConstructionOptions) (*Server, error) {
+	return newReadOnlyServerContextWithOptions(ctx, vaultRoot, nil, options)
+}
+
 // The loader seam lets startup tests observe the same revision-bracketed load as
 // request refreshes, without mutable package globals or a second startup read.
 func newReadOnlyServerContext(ctx context.Context, vaultRoot string, load func(context.Context, *Server) (*graph.Graph, error)) (*Server, error) {
+	return newReadOnlyServerContextWithOptions(ctx, vaultRoot, load, retrieve.ConstructionOptions{})
+}
+
+func newReadOnlyServerContextWithOptions(ctx context.Context, vaultRoot string, load func(context.Context, *Server) (*graph.Graph, error), options retrieve.ConstructionOptions) (*Server, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -296,7 +307,7 @@ func newReadOnlyServerContext(ctx context.Context, vaultRoot string, load func(c
 	if identityErr != nil {
 		return nil, startupFailure(ctx, identityErr, store.Close())
 	}
-	s := newServerContext(ctx, vaultRoot, store, nil)
+	s := newServerContextWithOptions(ctx, vaultRoot, store, nil, options)
 	s.indexIdentity = identity
 	if load != nil {
 		s.loadFreshGraph = func(ctx context.Context) (*graph.Graph, error) { return load(ctx, s) }
@@ -341,17 +352,31 @@ type owningReindexFunc func(context.Context, *index.Store, string) (*graph.Graph
 // for the stale-owner window. The small reindex seam keeps that lifecycle deterministic
 // under test without a mutable package-global hook.
 func NewOwningServerContext(ctx context.Context, vaultRoot string) (*Server, error) {
+	return newOwningServerWithRetrievalOptions(ctx, vaultRoot, retrieve.ConstructionOptions{})
+}
+
+func newOwningServerWithRetrievalOptions(ctx context.Context, vaultRoot string, options retrieve.ConstructionOptions) (*Server, error) {
 	cache := index.NewNoteCache()
-	return newOwningServerContext(ctx, vaultRoot, func(ctx context.Context, store *index.Store, root string) (*graph.Graph, error) {
+	return newOwningServerContextWithOptions(ctx, vaultRoot, func(ctx context.Context, store *index.Store, root string) (*graph.Graph, error) {
 		g, notes, err := index.ReindexFullContext(ctx, store, root)
 		if err == nil {
 			cache.Seed(notes)
 		}
 		return g, err
-	}, cache)
+	}, options, cache)
+}
+
+// NewOwningServerWithRetrievalOptions keeps the existing owner lock, watcher,
+// authoring and cancellation lifecycle; only its retrieval constructor differs.
+func NewOwningServerWithRetrievalOptions(ctx context.Context, vaultRoot string, options retrieve.ConstructionOptions) (*Server, error) {
+	return newOwningServerWithRetrievalOptions(ctx, vaultRoot, options)
 }
 
 func newOwningServerContext(ctx context.Context, vaultRoot string, reindex owningReindexFunc, watchCache ...*index.NoteCache) (*Server, error) {
+	return newOwningServerContextWithOptions(ctx, vaultRoot, reindex, retrieve.ConstructionOptions{}, watchCache...)
+}
+
+func newOwningServerContextWithOptions(ctx context.Context, vaultRoot string, reindex owningReindexFunc, options retrieve.ConstructionOptions, watchCache ...*index.NoteCache) (*Server, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -406,7 +431,7 @@ func newOwningServerContext(ctx context.Context, vaultRoot string, reindex ownin
 	if err := ctx.Err(); err != nil {
 		return nil, cleanup(err)
 	}
-	s := newServerContext(ctx, vaultRoot, store, g)
+	s := newServerContextWithOptions(ctx, vaultRoot, store, g, options)
 	s.indexIdentity = identity
 	s.owner = owner
 	opCtx, opCancel := context.WithCancel(s.lifetimeContext())
@@ -426,6 +451,10 @@ func newServer(vaultRoot string, store *index.Store, g *graph.Graph) *Server {
 }
 
 func newServerContext(ctx context.Context, vaultRoot string, store *index.Store, g *graph.Graph) *Server {
+	return newServerContextWithOptions(ctx, vaultRoot, store, g, retrieve.ConstructionOptions{})
+}
+
+func newServerContextWithOptions(ctx context.Context, vaultRoot string, store *index.Store, g *graph.Graph, options retrieve.ConstructionOptions) *Server {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -436,12 +465,15 @@ func newServerContext(ctx context.Context, vaultRoot string, store *index.Store,
 	configGate := make(chan struct{}, 1)
 	configGate <- struct{}{}
 	return &Server{
-		vaultRoot:       vaultRoot,
-		store:           store,
-		graph:           g,
-		lifetimeCtx:     ctx,
-		buildGate:       buildGate,
-		buildRetriever:  retrieve.NewFromEnvContext,
+		retrievalOptions: options,
+		vaultRoot:        vaultRoot,
+		store:            store,
+		graph:            g,
+		lifetimeCtx:      ctx,
+		buildGate:        buildGate,
+		buildRetriever: func(ctx context.Context, store *index.Store, g *graph.Graph) (*retrieve.Retriever, error) {
+			return retrieve.NewFromEnvContextWithOptions(ctx, store, g, options)
+		},
 		graphUpdateGate: graphUpdateGate,
 		reindexStore:    index.ReindexContext,
 		configGate:      configGate,
@@ -885,9 +917,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"signals": map[string]bool{
 			"fts":    true,
 			"graph":  true,
-			"vector": vectors > 0,
-			"rerank": os.Getenv("MESH_RERANK_ENDPOINT") != "",
-			"ann":    os.Getenv("MESH_HNSW_THRESHOLD") != "" && os.Getenv("MESH_HNSW_THRESHOLD") != "0",
+			"vector": vectors > 0 && !s.retrievalOptions.LocalOnly,
+			"rerank": !s.retrievalOptions.LocalOnly && os.Getenv("MESH_RERANK_ENDPOINT") != "",
+			"ann":    !s.retrievalOptions.LocalOnly && os.Getenv("MESH_HNSW_THRESHOLD") != "" && os.Getenv("MESH_HNSW_THRESHOLD") != "0",
 		},
 		"authRequired": s.auth.authRequired() || s.member != nil,
 		"update":       update,

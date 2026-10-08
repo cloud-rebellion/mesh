@@ -17,11 +17,18 @@ import (
 	"github.com/bright-interaction/mesh/internal/rerank"
 )
 
+// ConstructionOptions is selected only by a trusted Go server constructor.
+// LocalOnly uses indexed lexical/graph knowledge without discovering any local
+// provider configuration, subscription profile, environment or stored vectors.
+// Normal CLI/server constructors retain their existing configured semantics.
+type ConstructionOptions struct{ LocalOnly bool }
+
 // ConfigInputs is the immutable set of local inputs consumed by one retriever
 // build. Reuse compares actual consumed values, not file mtimes or before/after
 // hashes of files that the constructor might have read at a different instant.
 // Neither the inputs (which may include API keys) nor their digest may be logged.
 type ConfigInputs struct {
+	localOnly   bool
 	cfg         meshcfg.Config
 	env         map[string]string
 	sub         rerank.SubscriptionConfig
@@ -46,6 +53,19 @@ func snapshotEnvironment() map[string]string {
 // Errors retain the existing construction fallback/fail-loud behavior but make
 // the resulting reader ineligible for reuse until a successful later read.
 func LoadConfigInputs(ctx context.Context, meshDir string) (*ConfigInputs, error) {
+	return LoadConfigInputsWithOptions(ctx, meshDir, ConstructionOptions{})
+}
+
+func LoadConfigInputsWithOptions(ctx context.Context, meshDir string, options ConstructionOptions) (*ConfigInputs, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if options.LocalOnly {
+		return &ConfigInputs{localOnly: true, reusable: true, fingerprint: sha256.Sum256([]byte("mesh-local-retrieval-v1"))}, nil
+	}
 	trace := latency.Start("retriever_config", "local_inputs")
 	defer trace.End()
 	return loadConfigInputs(ctx, meshDir, rerank.LoadLocalSubscription)

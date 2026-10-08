@@ -72,7 +72,7 @@ func (s *Server) reuseAcknowledgement(ctx context.Context, before index.ReaderVe
 	if !valid || !s.viewReusable || before != s.viewVersion {
 		return false, false, nil
 	}
-	inputs, err := retrieve.LoadConfigInputs(ctx, s.store.MeshDir())
+	inputs, err := retrieve.LoadConfigInputsWithOptions(ctx, s.store.MeshDir(), s.retrievalOptions)
 	if err != nil {
 		return false, false, err
 	}

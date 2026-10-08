@@ -279,3 +279,31 @@ func TestPublishedUpdateRolloutCancellationAndConfinement(t *testing.T) {
 		t.Fatal("refused update changed source")
 	}
 }
+
+func TestDraftEditableSnapshotPreservesPartialSubstanceAndRefusesLoss(t *testing.T) {
+	root := t.TempDir()
+	created, err := CreateNote(root, NewNoteSpec{Status: "draft", Title: "Draft incident evidence", Template: "post-mortem", Summary: "The fixture has observations; cause is still unknown.", Sections: map[string]string{"what_happened": "A synthetic request failed. No production claim is made."}, Author: "original-author", Source: "import:fixture", Scope: []string{"dev", "sales"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(created.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := DraftNoteSnapshot("post-mortems/draft-incident-evidence.md", created.ID, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Spec.DraftID != created.ID || snapshot.Spec.DraftRevision != ContentRevision(raw) || snapshot.Spec.UpdateID != "" || snapshot.Spec.VerifiedAt != "" || snapshot.Frontmatter.Author != "original-author" || len(snapshot.Spec.Scope) != 2 {
+		t.Fatal("draft evidence/identity altered")
+	}
+	if _, err = PublishedNoteSnapshot(snapshot.Path, created.ID, raw); err == nil {
+		t.Fatal("draft prepared as published update")
+	}
+	if _, err = DraftNoteSnapshot(snapshot.Path, created.ID, []byte(strings.Replace(string(raw), "# Draft incident evidence", "Unstructured preamble must not vanish.\n\n# Draft incident evidence", 1))); err == nil {
+		t.Fatal("extra prose silently dropped")
+	}
+	if _, err = DraftNoteSnapshot(snapshot.Path, "other-id", raw); err == nil {
+		t.Fatal("wrong stable draft identity accepted")
+	}
+}

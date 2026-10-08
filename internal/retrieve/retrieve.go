@@ -226,7 +226,11 @@ func NewFromEnv(store *index.Store, g *graph.Graph) *Retriever {
 // vector loading, and the optional pro HNSW build. Construction never calls a
 // model: queries validate returned dimensions; explicit health probes test it.
 func NewFromEnvContext(ctx context.Context, store *index.Store, g *graph.Graph) (*Retriever, error) {
-	in, err := LoadConfigInputs(ctx, store.MeshDir())
+	return NewFromEnvContextWithOptions(ctx, store, g, ConstructionOptions{})
+}
+
+func NewFromEnvContextWithOptions(ctx context.Context, store *index.Store, g *graph.Graph, options ConstructionOptions) (*Retriever, error) {
+	in, err := LoadConfigInputsWithOptions(ctx, store.MeshDir(), options)
 	if err != nil {
 		return nil, err
 	}
@@ -256,6 +260,11 @@ func NewFromInputsReusingContext(ctx context.Context, store *index.Store, g *gra
 	r, err := newContext(ctx, store, g, priorRanker)
 	if err != nil {
 		return nil, err
+	}
+	// The local constructor has no inference lanes and never reads provider
+	// configuration, profiles or vectors, including on a later reader refresh.
+	if in.localOnly {
+		return r, nil
 	}
 	trace.Phase("config")
 	cfg := in.cfg

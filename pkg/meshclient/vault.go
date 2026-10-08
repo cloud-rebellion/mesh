@@ -4,6 +4,7 @@
 package meshclient
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -137,13 +138,19 @@ func contentHash(b []byte) string {
 // computeOutbox diffs the vault's markdown files on disk against the last-synced
 // hashes, returning the changes to push plus the current on-disk hash map.
 func computeOutbox(vaultDir string, prev map[string]string) ([]syncproto.OutboxItem, map[string]string, error) {
-	files, err := vault.Walk(vaultDir)
+	return computeOutboxContext(context.Background(), vaultDir, prev)
+}
+func computeOutboxContext(ctx context.Context, vaultDir string, prev map[string]string) ([]syncproto.OutboxItem, map[string]string, error) {
+	files, err := vault.WalkContext(ctx, vaultDir)
 	if err != nil {
 		return nil, nil, err
 	}
 	current := map[string]string{}
 	var outbox []syncproto.OutboxItem
 	for _, f := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		rel, err := filepath.Rel(vaultDir, f)
 		if err != nil {
 			rel = f
@@ -1280,12 +1287,23 @@ func syncDir(dir string) {
 // apply the hub's deltas, and persist the new base. It does not reindex; the
 // caller (cmd/mesh) runs index.Reconcile afterward.
 func SyncVault(vaultDir string) (Summary, error) {
-	release, err := acquireVaultSyncLock(vaultDir)
+	return SyncVaultContext(context.Background(), vaultDir)
+}
+
+// SyncVaultContext cancels lock waits, tree enumeration and hub requests. Once a
+// verified response enters local publication, its durability phase completes
+// before releasing the existing same-vault lock. An OS filesystem syscall itself
+// cannot be interrupted by a Go context.
+func SyncVaultContext(ctx context.Context, vaultDir string) (Summary, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := acquireVaultSyncLockContext(ctx, vaultDir)
 	if err != nil {
 		return Summary{}, err
 	}
 	defer release()
-	return syncVaultLocked(vaultDir)
+	return syncVaultRoundContext(ctx, vaultDir, true, nil)
 }
 
 // syncVaultLocked is SyncVault with the same-vault process/file lock already
@@ -1296,11 +1314,17 @@ func syncVaultLocked(vaultDir string) (Summary, error) {
 }
 
 func syncVaultRound(vaultDir string, allowPullFirst bool, suppressTombstones []string) (Summary, error) {
+	return syncVaultRoundContext(context.Background(), vaultDir, allowPullFirst, suppressTombstones)
+}
+func syncVaultRoundContext(ctx context.Context, vaultDir string, allowPullFirst bool, suppressTombstones []string) (Summary, error) {
+	if err := ctx.Err(); err != nil {
+		return Summary{}, err
+	}
 	creds, err := readCredentials(vaultDir)
 	if err != nil {
 		return Summary{}, err
 	}
-	creds = hydrateLegacyVaultID(vaultDir, creds)
+	creds = hydrateLegacyVaultIDContext(ctx, vaultDir, creds)
 	state := readState(vaultDir)
 	// Recover from an interrupted join produced by this or an older client. A base
 	// from another hub is never evidence about what the credential's hub has; the
@@ -1315,7 +1339,7 @@ func syncVaultRound(vaultDir string, allowPullFirst bool, suppressTombstones []s
 	// authoritative snapshot first; genuine survivors are pushed in a second
 	// round below, still within this one locked SyncVault call.
 	pullFirst := allowPullFirst && state.HeadSHA == ""
-	outbox, sentHashes, err := computeOutbox(vaultDir, state.Hashes)
+	outbox, sentHashes, err := computeOutboxContext(ctx, vaultDir, state.Hashes)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -1400,12 +1424,15 @@ func syncVaultRound(vaultDir string, allowPullFirst bool, suppressTombstones []s
 	if err != nil {
 		slog.Warn("sync: could not read the private team-reuse outbox; note sync continues", "err", err)
 	}
-	client := New(creds.HubURL, creds.Token)
+	client := NewWithContext(ctx, creds.HubURL, creds.Token)
 	client.UseZstdSyncRequests(state.RequestZstd)
 	resp, err := client.Sync(syncproto.SyncRequest{
 		BaseSHA: state.HeadSHA, Outbox: outbox, TombstoneSeq: state.TombSeq, ReuseEvents: reuseEvents,
 	})
 	if err != nil {
+		return Summary{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return Summary{}, err
 	}
 	if err := validateSyncResponse(vaultDir, resp, outbox); err != nil {
@@ -1585,7 +1612,7 @@ func syncVaultRound(vaultDir string, allowPullFirst bool, suppressTombstones []s
 		if afterUntrustedTombstoneQuarantine != nil {
 			afterUntrustedTombstoneQuarantine()
 		}
-		pending, _, perr := computeOutbox(vaultDir, current)
+		pending, _, perr := computeOutboxContext(ctx, vaultDir, current)
 		if perr != nil {
 			return sum, perr
 		}
@@ -1594,7 +1621,7 @@ func syncVaultRound(vaultDir string, allowPullFirst bool, suppressTombstones []s
 			sum.Deferred = nil
 			return sum, nil
 		}
-		next, nerr := syncVaultRound(vaultDir, false, resp.Tombstones)
+		next, nerr := syncVaultRoundContext(ctx, vaultDir, false, resp.Tombstones)
 		if nerr != nil {
 			return sum, fmt.Errorf("sync: authoritative pull succeeded but survivor push failed: %w", nerr)
 		}
@@ -1610,10 +1637,13 @@ func syncVaultRound(vaultDir string, allowPullFirst bool, suppressTombstones []s
 // unavailable /v1/vault endpoint cannot block ordinary note sync. The id becomes live
 // only after the private credential file is durably replaced.
 func hydrateLegacyVaultID(vaultDir string, creds credentials) credentials {
+	return hydrateLegacyVaultIDContext(context.Background(), vaultDir, creds)
+}
+func hydrateLegacyVaultIDContext(ctx context.Context, vaultDir string, creds credentials) credentials {
 	if creds.VaultID != "" {
 		return creds
 	}
-	vi, err := New(creds.HubURL, creds.Token).Vault()
+	vi, err := NewWithContext(ctx, creds.HubURL, creds.Token).Vault()
 	if err != nil {
 		slog.Warn("sync: could not identify this legacy join; cross-user reuse telemetry remains disabled", "err", err)
 		return creds

@@ -71,7 +71,7 @@ func authoringToolSpecs() []map[string]any {
 	lookup := map[string]any{"type": "object", "required": []string{"template"}, "additionalProperties": false,
 		"properties": map[string]any{"template": str, "version": map[string]any{"type": "integer", "minimum": 1}}}
 	tools := []map[string]any{
-		{"name": "mesh_prepare_update", "description": "Prepare a writable published note with its content and revision. Edit, validate and publish through mesh_author_note; retain identity, template/version and scopes. Routine updates need no approval.", "inputSchema": map[string]any{"type": "object", "required": []string{"id"}, "additionalProperties": false, "properties": map[string]any{"id": str}}},
+		{"name": "mesh_prepare_update", "description": "Prepare a published note or explicit draft:true with full content and revision. Preserve identity, template/version and scopes; edit through mesh_author_note. Routine updates need no approval.", "inputSchema": map[string]any{"type": "object", "required": []string{"id"}, "additionalProperties": false, "properties": map[string]any{"id": str, "draft": map[string]any{"type": "boolean"}}}},
 		{"name": "mesh_drafts", "description": "Browse the explicit draft inbox with current access checks. Returns revisions for safe draft completion; ordinary search excludes drafts.", "inputSchema": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 20}, "offset": map[string]any{"type": "integer", "minimum": 0}}}},
 		{"name": "mesh_templates", "description": "Compact versioned catalog of note templates and optional blocks. Choose a purpose, then fetch only its template and selected blocks.", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}},
 		{"name": "mesh_note_template", "description": "Fetch one note template, section keys and authoring guidance. Semantic type is separate from template choice.", "inputSchema": lookup},
@@ -177,6 +177,15 @@ func (s *Server) authoringSpec(ctx context.Context, a authoringArgs, forceType s
 		// Retain all existing scopes. New-note default scope selection must never
 		// silently remove audiences from a published note (including multi-scope notes).
 		scopes = append([]string{}, update.Frontmatter.EffectiveScopes()...)
+		if want != "" {
+			scopes = []string{want}
+		}
+	} else if a.DraftID != "" {
+		snapshot, _, rerr := s.authorizedDraft(ctx, a.DraftID)
+		if rerr != nil {
+			return vault.NewNoteSpec{}, rerr
+		}
+		scopes = append([]string{}, snapshot.Frontmatter.EffectiveScopes()...)
 		if want != "" {
 			scopes = []string{want}
 		}

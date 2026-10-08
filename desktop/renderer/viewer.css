@@ -1,0 +1,4 @@
+/* SPDX-License-Identifier: LicenseRef-Mesh-Sustainable-Use-License */
+/* The desktop exposes the implemented local reader/search/graph/docs contract. */
+[data-view="ask"],[data-view="dashboard"],[data-view="review"],[data-view="settings"],[data-view="api"],.mesh-update-web,a[href^="vscode:"]{display:none!important}
+#desktop-edit-note{margin-left:auto;padding:7px 12px;border:1px solid #45694f;border-radius:6px;background:#223c2c;color:#e1f0e4;cursor:pointer}

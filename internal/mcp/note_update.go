@@ -57,17 +57,40 @@ func (s *Server) toolPrepareUpdate(ctx context.Context, raw json.RawMessage) (an
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var a struct {
-		ID string `json:"id"`
+		ID    string `json:"id"`
+		Draft bool   `json:"draft,omitempty"`
 	}
 	if err := decodeAuthoring(raw, &a); err != nil {
 		return nil, &rpcError{Code: codeInvalidParams, Message: err.Error()}
 	}
-	snapshot, rerr := s.authorizedUpdate(ctx, a.ID)
+	var snapshot *vault.NoteSnapshot
+	var rerr *rpcError
+	if a.Draft {
+		if can, set := writeAllowed(ctx); set && !can {
+			return nil, &rpcError{Code: codeInvalidParams, Message: "forbidden: your role is read-only"}
+		}
+		original, _, denied := s.authorizedDraft(ctx, a.ID)
+		if denied != nil {
+			return nil, denied
+		}
+		// Reread under current authorization; the response's exact revision is what
+		// the normal publication path fences. No clipped/raw replacement parser.
+		data, err := readFetchFile(ctx, s.vaultRoot, original.Path, batchFetchFileBytes)
+		if err != nil || !fetchFileScopeAllowed(data, scopeFromCtx(ctx)) || vault.ContentRevision(data) != original.Revision {
+			return nil, &rpcError{Code: codeInvalidParams, Message: "draft changed during preparation"}
+		}
+		snapshot, err = vault.DraftNoteSnapshot(original.Path, a.ID, data)
+		if err != nil {
+			return nil, &rpcError{Code: codeInvalidParams, Message: ScrubPathsUnder(err.Error(), s.vaultRoot)}
+		}
+	} else {
+		snapshot, rerr = s.authorizedUpdate(ctx, a.ID)
+	}
 	if rerr != nil {
 		return nil, rerr
 	}
 	v, fm := snapshot.Spec, snapshot.Frontmatter
-	note := authoringArgs{UpdateID: v.UpdateID, UpdateRevision: v.UpdateRevision,
+	note := authoringArgs{UpdateID: v.UpdateID, UpdateRevision: v.UpdateRevision, DraftID: v.DraftID, DraftRevision: v.DraftRevision,
 		Type: string(v.Type), Title: v.Title, Template: v.Template, TemplateVersion: v.TemplateVersion,
 		Summary: v.Summary, Sections: v.Sections, Blocks: v.Blocks,
 		Collections: v.Collections, Related: v.Related, Supersedes: v.Supersedes, Tags: v.Tags,
@@ -75,7 +98,7 @@ func (s *Server) toolPrepareUpdate(ctx context.Context, raw json.RawMessage) (an
 	}
 	// Omitted scope on an update inherits the target's complete current audience.
 	payload := map[string]any{"id": a.ID, "revision": snapshot.Revision, "note": note,
-		"saved": false, "created": fm.Created, "original_author": fm.Author,
+		"saved": false, "draft": a.Draft, "created": fm.Created, "original_author": fm.Author,
 		"scopes": fm.EffectiveScopes(), "previous_verified_at": fm.VerifiedAt,
 		"verification": "Historical evidence remains in the body. verified_at is not prefilled; set it only after recording checks for the edited content.",
 		"workflow":     "Edit the complete note object, retaining relevant evidence and links; validate and publish through mesh_author_note. Stale revisions require rereading and reconciliation. Incomplete edits use a separate linked draft.",

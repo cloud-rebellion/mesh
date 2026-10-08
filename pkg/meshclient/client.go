@@ -10,6 +10,7 @@ package meshclient
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,9 +26,10 @@ import (
 
 // Client is the HTTP transport to one hub.
 type Client struct {
-	HubURL string
-	Token  string
-	HTTP   *http.Client
+	requestContext context.Context
+	HubURL         string
+	Token          string
+	HTTP           *http.Client
 
 	// syncRequestZstd is learned from a previous successful sync response and
 	// persisted by the vault orchestrator. It is deliberately opt-in so a new
@@ -42,6 +44,19 @@ func New(hubURL, token string) *Client {
 		Token:  token,
 		HTTP:   &http.Client{Timeout: 60 * time.Second},
 	}
+}
+
+// NewWithContext preserves the existing transport API while making requests
+// cancelable. Context clients refuse redirects so a bearer/invitation cannot
+// leave the selected hub through a redirect.
+func NewWithContext(ctx context.Context, hubURL, token string) *Client {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c := New(hubURL, token)
+	c.requestContext = ctx
+	c.HTTP.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
 }
 
 // Join redeems a one-time invite for a client token (no bearer needed).
@@ -156,7 +171,11 @@ func (c *Client) rpcHeadersOptions(method, path string, body any, authed bool, o
 			rdr = &buf
 		}
 	}
-	req, err := http.NewRequest(method, c.HubURL+path, rdr)
+	ctx := c.requestContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.HubURL+path, rdr)
 	if err != nil {
 		return nil, err
 	}

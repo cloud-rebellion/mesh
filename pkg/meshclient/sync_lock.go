@@ -4,11 +4,13 @@
 package meshclient
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Same-vault sync is a transaction over the note tree, credentials, and
@@ -19,7 +21,7 @@ import (
 // lock semantics. The OS lock closes the cross-process gap and is released by
 // the kernel on crash, so no stale lock file can wedge restart recovery.
 type localVaultLock struct {
-	mu   sync.Mutex
+	gate chan struct{}
 	refs int
 }
 
@@ -29,6 +31,16 @@ var localVaultLocks = struct {
 }{byPath: make(map[string]*localVaultLock)}
 
 func acquireVaultSyncLock(vaultDir string) (func(), error) {
+	return acquireVaultSyncLockContext(context.Background(), vaultDir)
+}
+
+func acquireVaultSyncLockContext(ctx context.Context, vaultDir string) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	key, err := filepath.Abs(vaultDir)
 	if err != nil {
 		return nil, err
@@ -41,15 +53,29 @@ func acquireVaultSyncLock(vaultDir string) (func(), error) {
 	localVaultLocks.Lock()
 	local := localVaultLocks.byPath[key]
 	if local == nil {
-		local = &localVaultLock{}
+		local = &localVaultLock{gate: make(chan struct{}, 1)}
+		local.gate <- struct{}{}
 		localVaultLocks.byPath[key] = local
 	}
 	local.refs++
 	localVaultLocks.Unlock()
-	local.mu.Lock()
+	dropReference := func() {
+		localVaultLocks.Lock()
+		local.refs--
+		if local.refs == 0 {
+			delete(localVaultLocks.byPath, key)
+		}
+		localVaultLocks.Unlock()
+	}
+	select {
+	case <-ctx.Done():
+		dropReference()
+		return nil, ctx.Err()
+	case <-local.gate:
+	}
 
 	releaseLocal := func() {
-		local.mu.Unlock()
+		local.gate <- struct{}{}
 		localVaultLocks.Lock()
 		local.refs--
 		if local.refs == 0 {
@@ -69,7 +95,7 @@ func acquireVaultSyncLock(vaultDir string) (func(), error) {
 		releaseLocal()
 		return nil, err
 	}
-	if err := lockSyncFile(f); err != nil {
+	if err := lockSyncFileContext(ctx, f); err != nil {
 		_ = f.Close()
 		releaseLocal()
 		return nil, fmt.Errorf("lock sync for %s: %w", key, err)
@@ -87,4 +113,28 @@ func acquireVaultSyncLock(vaultDir string) (func(), error) {
 			releaseLocal()
 		})
 	}, nil
+}
+
+// No detached blocking-lock goroutine survives a canceled join/sync. Platform
+// nonblocking attempts preserve the same lock and wait with caller cancellation.
+func lockSyncFileContext(ctx context.Context, f *os.File) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ok, err := tryLockSyncFile(f)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }

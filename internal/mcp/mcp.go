@@ -42,8 +42,9 @@ const (
 // rebuild single-flight so the dispatch goroutine (a write-back) and the watcher
 // never reindex at the same time.
 type Server struct {
-	vaultRoot string
-	store     *index.Store
+	vaultRoot        string
+	retrievalOptions retrieve.ConstructionOptions
+	store            *index.Store
 
 	mu        sync.RWMutex // guards graph + retriever
 	graph     *graph.Graph
@@ -141,6 +142,23 @@ func NewServer(vaultRoot string) (*Server, error) {
 		return nil, err
 	}
 	return newServerWithStore(vaultRoot, store, nil, "")
+}
+
+// NewServerWithRetrievalOptions is the normal reader with an explicit immutable
+// construction choice and caller-controlled startup cancellation. It gains no
+// index ownership or hosted authorization capabilities.
+func NewServerWithRetrievalOptions(ctx context.Context, vaultRoot string, options retrieve.ConstructionOptions) (*Server, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	store, err := index.OpenReadOnly(vaultRoot)
+	if err != nil {
+		return nil, err
+	}
+	return newServerWithStoreOptions(ctx, vaultRoot, store, nil, "", ownerIndexTimeout, options)
 }
 
 // NewOwningServer elects this process the vault's OWNING WRITER when no other live
@@ -255,8 +273,12 @@ func newServerWithStore(vaultRoot string, store *index.Store, owner *index.Owner
 }
 
 func newServerWithStoreTimeout(vaultRoot string, store *index.Store, owner *index.OwnerLock, ownerRole string, wait time.Duration) (*Server, error) {
-	opCtx, opCancel := context.WithCancel(context.Background())
-	s := &Server{vaultRoot: vaultRoot, store: store, owner: owner, ownerRole: ownerRole, cache: index.NewNoteCache(), ready: make(chan struct{}), bg: make(chan struct{}), ownerIndexTimeout: wait, opCancel: opCancel, opDone: make(chan struct{}), opWake: make(chan struct{}, 1)}
+	return newServerWithStoreOptions(context.Background(), vaultRoot, store, owner, ownerRole, wait, retrieve.ConstructionOptions{})
+}
+
+func newServerWithStoreOptions(ctx context.Context, vaultRoot string, store *index.Store, owner *index.OwnerLock, ownerRole string, wait time.Duration, options retrieve.ConstructionOptions) (*Server, error) {
+	opCtx, opCancel := context.WithCancel(ctx)
+	s := &Server{retrievalOptions: options, vaultRoot: vaultRoot, store: store, owner: owner, ownerRole: ownerRole, cache: index.NewNoteCache(), ready: make(chan struct{}), bg: make(chan struct{}), ownerIndexTimeout: wait, opCancel: opCancel, opDone: make(chan struct{}), opWake: make(chan struct{}, 1)}
 	// The initial load runs in the background so the MCP handshake answers
 	// immediately: a full reload of a grown vault plus the note<->code bridge
 	// exceeds a client's connect timeout (Claude Code kills the server at 30s
@@ -276,7 +298,12 @@ func newServerWithStoreTimeout(vaultRoot string, store *index.Store, owner *inde
 		// nodes / edges, so on this path the owning writer has already done that work and
 		// all this server has to do is read the result into memory. LoadGraph is pure SQL
 		// over readDB and was written for exactly this split.
-		loadErr := s.load()
+		var loadErr error
+		if !s.owns() {
+			_, loadErr = s.refreshContext(opCtx)
+		} else {
+			loadErr = s.load()
+		}
 		if errors.Is(loadErr, index.ErrReadOnly) && !s.owns() {
 			// A declared owner may take an elected MCP claim after construction but
 			// before the asynchronous ReindexFull commits. That displacement is not a
@@ -533,7 +560,7 @@ func (s *Server) snapshot() (*graph.Graph, *retrieve.Retriever) {
 func (s *Server) swap(g *graph.Graph) {
 	// All callers hold reloadMu. Owned rebuilds did not sample a monitor stamp.
 	s.viewReusable = false
-	r := retrieve.NewFromEnv(s.store, g)
+	r, _ := retrieve.NewFromEnvContextWithOptions(context.Background(), s.store, g, s.retrievalOptions)
 	s.mu.Lock()
 	s.graph = g
 	s.retriever = r
@@ -608,7 +635,7 @@ func (s *Server) refreshContext(ctx context.Context) (index.Reconciliation, erro
 		return index.Reconciliation{}, errors.New("mesh: reader closed")
 	}
 	trace.Phase("freshness_check")
-	in, err := retrieve.LoadConfigInputs(ctx, s.store.MeshDir())
+	in, err := retrieve.LoadConfigInputsWithOptions(ctx, s.store.MeshDir(), s.retrievalOptions)
 	if err != nil {
 		return index.Reconciliation{}, err
 	}
@@ -662,7 +689,7 @@ func (s *Server) refreshAtNoteVersion(ctx context.Context, noteID, notePath, not
 		return matched, err
 	}
 	trace.Phase("install")
-	in, err := retrieve.LoadConfigInputs(ctx, s.store.MeshDir())
+	in, err := retrieve.LoadConfigInputsWithOptions(ctx, s.store.MeshDir(), s.retrievalOptions)
 	if err != nil {
 		return false, err
 	}

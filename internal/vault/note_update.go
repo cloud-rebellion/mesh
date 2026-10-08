@@ -47,10 +47,20 @@ func NoteSnapshotContext(ctx context.Context, root, id string) (*NoteSnapshot, e
 // PublishedNoteSnapshot decodes already-authorized bytes without filesystem IO.
 // Only losslessly representable authoring bodies can be edited by this API.
 func PublishedNoteSnapshot(rel, id string, data []byte) (*NoteSnapshot, error) {
+	return editableNoteSnapshot(rel, id, data, false)
+}
+
+// DraftNoteSnapshot returns a lossless editable object from already-authorized
+// bytes. It never converts prose or fabricates missing draft substance.
+func DraftNoteSnapshot(rel, id string, data []byte) (*NoteSnapshot, error) {
+	return editableNoteSnapshot(rel, id, data, true)
+}
+
+func editableNoteSnapshot(rel, id string, data []byte, draft bool) (*NoteSnapshot, error) {
 	header, body, had := SplitFrontmatter(string(data))
 	fm, _, err := ParseFrontmatter([]byte(header))
-	if err != nil || !had || UnterminatedFrontmatter(string(data)) || fm.ID != id || IsDraft(fm) || fm.Template == "" {
-		return nil, fmt.Errorf("%w: update target must be a published versioned note", ErrInvalidSpec)
+	if err != nil || !had || UnterminatedFrontmatter(string(data)) || fm.ID != id || IsDraft(fm) != draft || fm.Template == "" {
+		return nil, fmt.Errorf("%w: editable target must match its published/draft lifecycle and versioned template", ErrInvalidSpec)
 	}
 	mixedHistoricalProse := fm.Summary != ""
 	for _, value := range ReadLegacy(fm).Values() {
@@ -75,14 +85,22 @@ func PublishedNoteSnapshot(rel, id string, data []byte) (*NoteSnapshot, error) {
 	}
 	revision := ContentRevision(data)
 	before := &NoteSnapshot{Path: rel, Revision: revision, Content: data, Frontmatter: fm}
-	spec, err := NormalizeUpdateSpec(NewNoteSpec{
+	input := NewNoteSpec{
 		UpdateID: id, UpdateRevision: revision, UpdatePath: rel,
 		Type: fm.Type, Title: fm.Title, Template: fm.Template, TemplateVersion: fm.TemplateVersion,
 		Summary: authored.Summary, Sections: authored.Sections, Blocks: fm.BlockContents,
 		Collections: fm.Collections, Related: fm.Related, Supersedes: fm.Supersedes, Tags: fm.Tags,
 		Status: fm.Status, Severity: fm.Severity, Confidence: fm.Confidence, ReviewBy: fm.ReviewBy,
 		Scope: fm.EffectiveScopes(),
-	}, before)
+	}
+	var spec NewNoteSpec
+	if draft {
+		input.UpdateID, input.UpdateRevision, input.UpdatePath = "", "", ""
+		input.DraftID, input.DraftRevision, input.DraftPath = id, revision, rel
+		spec, err = NormalizeSpec(input)
+	} else {
+		spec, err = NormalizeUpdateSpec(input, before)
+	}
 	if err != nil {
 		return nil, err
 	}
