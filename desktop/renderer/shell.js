@@ -2,7 +2,7 @@
 'use strict';
 (() => {
   const $=id=>document.getElementById(id), api=window.meshDesktop;
-  let overview=null,catalog=null,template=null,original={},blocks=[],confirmedPublication=null,dirty=false,operation=false,viewerVault=null,viewerSync=null,viewerNeedsRefresh=false,generation=0,sessionKey=null;
+  let overview=null,catalog=null,template=null,original={},blocks=[],confirmedPublication=null,dirty=false,operation=false,viewerVault=null,viewerSync=null,viewerNeedsRefresh=false,generation=0,sessionKey=null,updateFrozen=false,restartAcknowledged=null,frozenControls=[];
   function setDirty(value){dirty=value;api.perform('editor-state',{dirty:value}).catch(()=>{});}
   function message(value) { $('message').textContent=value||'';$('message').hidden=!value; }
   async function perform(action,params={}) {
@@ -20,18 +20,27 @@
   }
   async function tool(name,args={}) {const before=generation,value=await perform('tool',{name,arguments:args});
     if(before!==generation){const error=new Error('The vault changed during this operation. Its result was not applied here; inspect the prior vault before another attempt.');error.code='VAULT_CHANGED';throw error;}return unwrap(value);}
-  function busy(value){for(const id of ['new-note','edit-note','edit-search-button','publish','save-draft','preview','add-block','drafts','sync','discard'])$(id).disabled=value;
+  function busy(value){value=value||updateFrozen;for(const id of ['new-note','edit-note','edit-search-button','publish','save-draft','preview','add-block','drafts','sync','discard'])$(id).disabled=value;
     for(const field of $('note-form').querySelectorAll('input,textarea,select'))field.disabled=value;
     $('template').disabled=value||!!(original.update_id||original.draft_id);
     $('sync').disabled=value||['unjoined','metadata-pending','join-uncertain'].includes(overview?.status?.sync.state)||overview?.status?.state==='join-uncertain';
   }
   async function run(operationFn) {
-    if(operation)return;operation=true;busy(true);message('');
+    if(operation||updateFrozen)return;operation=true;busy(true);message('');
     try{await operationFn();}catch(error){message(error.message);}finally{operation=false;busy(false);}
   }
   function list(value) {return value.split(',').map(v=>v.trim()).filter(Boolean);}
   function render(state) {
     overview=state;
+    const token=state.updates.restart_token||null;
+    if(token&&token!==restartAcknowledged){
+      updateFrozen=true;restartAcknowledged=token;
+      frozenControls=[...document.querySelectorAll('button,input,textarea,select')].map(element=>({element,disabled:element.disabled}));
+      for(const {element}of frozenControls)element.disabled=true;
+      // This acknowledgement reflects actual editor buffers and operation state
+      // after freezing controls. It neither saves nor publishes any note.
+      api.perform('editor-state',{dirty,operation,restart_token:token}).catch(()=>{});
+    }else if(!token&&updateFrozen){updateFrozen=false;restartAcknowledged=null;for(const {element,disabled}of frozenControls)element.disabled=disabled;frozenControls=[];busy(operation);}
     const next=state.phase==='vault'?state.selected?.id:null;
     if(next!==sessionKey){sessionKey=next;generation++;catalog=null;template=null;original={};blocks=[];confirmedPublication=null;viewerNeedsRefresh=false;$('edit-results').replaceChildren();$('edit-dialog').returnValue='';if($('edit-dialog').open)$('edit-dialog').close();$('editor').hidden=true;$('draft-list').hidden=true;setDirty(false);}
     const local=state.phase==='vault';$('start').hidden=local;$('workspace').hidden=!local;$('home').hidden=!local;
@@ -57,6 +66,7 @@
       if(sync.last_success&&sync.last_success!==viewerSync){viewerSync=sync.last_success;viewerNeedsRefresh=true;}
       if($('editor').hidden&&$('draft-list').hidden)showViewer();
     }else{viewerVault=null;viewerSync=null;$('viewer').removeAttribute('src');$('viewer').hidden=true;if(state.phase==='start')setDirty(false);}
+    if(updateFrozen)for(const element of document.querySelectorAll('button,input,textarea,select'))element.disabled=true;
   }
   function inputField(label,description,value='') {
     const el=document.createElement('label');el.append(document.createTextNode(label));

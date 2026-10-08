@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),vm=require('node:vm');
 class Element {
-  constructor(tag='div'){this.tag=tag;this.children=[];this.listeners={};this.dataset={};this.hidden=false;this.value='';this.textContent='';this.sourceChanges=[];}
+  constructor(tag='div'){this.tag=tag;this.children=[];this.listeners={};this.dataset={};this.hidden=false;this.value='';this.textContent='';this.sourceChanges=[];this.disabled=false;}
   set src(value){this.sourceChanges.push(value);this._src=value;}get src(){return this._src;}
   addEventListener(name,fn){(this.listeners[name]??=[]).push(fn);}
   append(...children){this.children.push(...children);}
@@ -43,7 +43,10 @@ async function fixture({valid=true,draftError=false,update=null,delayedTool=null
     }
     throw new Error('Unexpected fixture operation');
   }};
-  const document={getElementById:get,createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text}),};
+  const document={getElementById:get,createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text}),querySelectorAll:()=>{
+    const found=new Set();function visit(element){if(!element||found.has(element))return;found.add(element);for(const child of element.children||[])visit(child);}
+    for(const element of elements.values())visit(element);return[...found].filter(element=>'disabled'in element||['button','input','textarea','select'].includes(element.tag));
+  }};
   const events={},window={meshDesktop:api,addEventListener:(name,fn)=>events[name]=fn};get('viewer').contentWindow={};
   vm.runInNewContext(await fs.readFile(path.join(__dirname,'../renderer/shell.js'),'utf8'),{window,document,confirm:()=>true,console});await flush();
   return{get,calls,events,state,stateCallback};
@@ -162,4 +165,18 @@ test('native join cancellation and pending acceptance are described truthfully w
   const c=await fixture({joinState:cancel});c.get('join-invite').value='Synthetic transient invitation';c.get('join-name').value='Fixture';c.get('join-form').fire('submit');await flush();assert.equal(c.get('message').textContent,'Join cancelled.');assert.equal(c.get('join-invite').value,'');
   const j=await fixture();j.state.status.state='joining';j.state.status.sync.state='syncing';j.get('join-invite').value='Synthetic transient invitation';j.get('join-name').value='Fixture';j.get('join-form').fire('submit');await flush();assert.equal(j.get('message').textContent,'Joining the team. The invitation is sent once.');assert.equal(j.get('join-invite').value,'');
   j.stateCallback({...j.state,status:{...j.state.status,sync:{...j.state.status.sync,state:'idle'},identity:{user:'Synthetic teammate',role:'unknown',verified:false}}});assert.ok(j.get('message').textContent.includes('Access is not verified'));assert.ok(j.get('identity').textContent.includes('Access not verified'));
+});
+
+test('actual renderer freezes editor controls then acknowledges its dirty buffer, and deferral restores the unchanged note without authoring',async()=>{
+ const{get,calls,state,stateCallback}=await fixture();get('new-note').fire('click');await flush();get('summary').value='Unsaved human buffer';get('summary').fire('input');get('note-form').fire('input');await flush();
+ const writes=calls.filter(c=>['draft','publish'].includes(c.params?.arguments?.action)).length,token='d'.repeat(48);
+ stateCallback({...state,updates:{state:'quiescing',reason:'Preparing a safe restart.',restart_token:token}});await flush();
+ const ack=calls.find(c=>c.action==='editor-state'&&c.params.restart_token===token);assert.equal(ack.params.dirty,true);assert.equal(ack.params.operation,false);assert.equal(get('publish').disabled,true);assert.equal(get('summary').disabled,true);
+ get('save-draft').fire('click');await flush();assert.equal(calls.filter(c=>['draft','publish'].includes(c.params?.arguments?.action)).length,writes);
+ stateCallback({...state,updates:{state:'available',reason:'Deferred',restart_token:null}});await flush();assert.equal(get('summary').value,'Unsaved human buffer');assert.equal(get('publish').disabled,false);assert.equal(get('summary').disabled,false);assert.equal(get('editor').hidden,false);
+});
+test('actual renderer acknowledges active shared publication and never reports it idle merely because controls are frozen',async()=>{
+ let resolve;const wait=new Promise(r=>resolve=r),{get,calls,state,stateCallback}=await fixture({delayedTool:{name:'mesh_author_note',action:'publish',wait}});get('new-note').fire('click');await flush();get('summary').value='Human authoring';get('note-form').fire('input');get('publish').fire('click');await flush();
+ const token='e'.repeat(48);stateCallback({...state,updates:{state:'quiescing',reason:'Restart requested',restart_token:token}});await flush();const ack=calls.find(c=>c.params?.restart_token===token);assert.equal(ack.params.operation,true);assert.equal(ack.params.dirty,true);assert.equal(get('publish').disabled,true);
+ stateCallback({...state,updates:{state:'available',reason:'Deferred',restart_token:null}});resolve({ok:true,result:{content:[{type:'text',text:JSON.stringify({id:'saved',revision:'b'.repeat(64)})}]}});await flush();assert.equal(calls.filter(c=>c.params?.arguments?.action==='publish').length,1);assert.equal(get('publish').disabled,false);
 });

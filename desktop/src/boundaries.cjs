@@ -71,7 +71,17 @@ function safeError(error) {
     VAULT_CHANGED:'The vault changed during this operation. Its result was not applied here. A write may have completed in the prior vault; inspect that vault before another attempt.',
     ENGINE_EXIT_UNCERTAIN:'Mesh could not confirm that the prior engine stopped. A new vault owner was not started.',
     JOIN_UNAVAILABLE:'Team enrollment is unavailable in this build.',
-    UPDATES_DISABLED:'Signed application updates are not configured in this build.' };
+    UPDATES_DISABLED:'Signed application updates are not configured in this build.',
+    QUIT_DRAIN_LOCKED:'Mesh is closing its local engine. No new operation was started.',
+    QUIT_OPERATION_ACTIVE:'Finish the current operation before quitting. The window remains open.',
+    QUIT_CANCELLED:'Mesh remains open; no unresolved operation was repeated.',
+    UPDATE_NOT_READY:'No admitted application update is ready. Signed updates remain disabled in this build.',
+    UPDATE_RESTART_LOCKED:'Mesh is preparing a safe update restart. No new operation was started.',
+    UPDATE_OPERATION_ACTIVE:'Finish the current operation before restarting to update.',
+    UPDATE_WRITE_UNCERTAIN:'A note write has an uncertain outcome. Inspect the existing note before restarting; Mesh will not repeat the write.',
+    UPDATE_JOIN_UNSETTLED:'Team enrollment or its recovery is still unsettled. Recover it before restarting to update.',
+    UPDATE_EDITOR_NOT_READY:'The update was deferred. Save a draft or explicitly discard unsaved changes, then try again.',
+    NATIVE_UPDATE_UNCERTAIN:'The native update outcome is uncertain. No second staging attempt was started. Inspect the application state before closing.' };
   return { code, message:messages[code] || 'Mesh could not complete this operation. No success was recorded.' };
 }
 module.exports = { ORIGIN, VIEWER_ORIGIN, REQUEST_BYTES, RESPONSE_BYTES, TOOLS, CSP, VIEWER_CSP, object, exact, text, appURL,viewerURL,privateURL,engineWebPath, validateMethod, validHub, assertSender, safeError };

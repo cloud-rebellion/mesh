@@ -10,12 +10,41 @@ const { configureUpdater }=require('./updater.cjs');
 const { makeProtocol }=require('./protocol.cjs');
 app.enableSandbox();
 protocol.registerSchemesAsPrivileged([{scheme:'mesh-app',privileges:{standard:true,secure:true,supportFetchAPI:true,corsEnabled:true,stream:true}}]);
-let window=null,controller=null,quitting=false,refreshTimer=null,editorDirty=false;
-function confirmDiscard(){
+let window=null,controller=null,quitting=false,refreshTimer=null,editorDirty=false,restartAcknowledgement=null,quitRequest=null;
+function confirmDiscard({record=true}={}){
   if(!editorDirty)return true;
   const choice=dialog.showMessageBoxSync(window,{type:'question',buttons:['Keep editing','Discard changes'],defaultId:0,cancelId:0,
     message:'Discard unsaved changes?',detail:'Save a draft or publish the note to preserve your work.'});
-  if(choice===0)return false;editorDirty=false;return true;
+  if(choice!==1)return false;if(record)editorDirty=false;return true;
+}
+function confirmEditorForUpdate(token){
+  return new Promise((resolve,reject)=>{
+    const frame=window?.webContents.mainFrame,selected=controller.selected,engine=controller.engine;
+    const finish=(error,value)=>{clearTimeout(timer);restartAcknowledgement=null;error?reject(error):resolve(value);};
+    const timer=setTimeout(()=>finish(new Error('UPDATE_EDITOR_NOT_READY')),5000);
+    restartAcknowledgement={token,frame,selected,engine,finish};
+    // Resend after registering the acknowledgement; an earlier state event may
+    // already be queued. One token, current window/frame and vault only.
+    controller.changed();
+  });
+}
+async function restartUpdate(){
+  try{await controller.restartForUpdate({confirmEditor:confirmEditorForUpdate});}
+  catch(error){dialog.showErrorBox('Mesh update deferred',safeError(error).message);}
+}
+async function requestGracefulQuit(){
+  if(quitting||!controller||quitRequest)return;
+  // A ready native install has already drained the editor and original owner.
+  // Staging/uncertain native states may install on quit and cannot use this path.
+  if(controller.updateLock){if(controller.updater.status().state==='ready'&&!controller.engine){quitting=true;app.quit();}return;}
+  if(!confirmDiscard({record:false}))return;
+  quitRequest=controller.quitGracefully({confirmUnknown:async({write,join})=>{
+    const detail=[write?'A note write has an unknown outcome. Mesh will not clear it or repeat it. Inspect the note after reopening.':'',join?'Team enrollment or its recovery is unsettled. Mesh will stop the local worker without redeeming the invitation again.':''].filter(Boolean).join(' ');
+    return dialog.showMessageBoxSync(window,{type:'warning',buttons:['Keep Mesh open','Quit Mesh'],defaultId:0,cancelId:0,message:'Quit with an unresolved operation?',detail})===1;
+  }});
+  try{await quitRequest;quitting=true;clearInterval(refreshTimer);app.quit();}
+  catch(error){if(error.message!=='QUIT_CANCELLED')dialog.showErrorBox('Mesh could not quit safely',safeError(error).message);}
+  finally{quitRequest=null;}
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -48,24 +77,38 @@ else {
     controller.on('change',value=>{if (window&&!window.isDestroyed()) window.webContents.send('mesh-desktop:state',value);});
     ipcMain.handle('mesh-desktop:action',async(event,input)=>{
       try { assertSender(event,window);exact(input,['action','params']);if(typeof input.action!=='string')throw new Error('INVALID_REQUEST');
-        if(input.action==='editor-state'){exact(input.params,['dirty']);if(typeof input.params.dirty!=='boolean')throw new Error('INVALID_REQUEST');editorDirty=input.params.dirty;return{ok:true,result:{recorded:true}};}
+        if(input.action==='editor-state'){
+          exact(input.params,['dirty','restart_token','operation'],['dirty']);if(typeof input.params.dirty!=='boolean')throw new Error('INVALID_REQUEST');
+          if('restart_token'in input.params){
+            const pending=restartAcknowledgement;
+            if(!pending||input.params.restart_token!==pending.token||event.senderFrame!==pending.frame||controller.selected!==pending.selected||controller.engine!==pending.engine||typeof input.params.operation!=='boolean')throw new Error('UPDATE_EDITOR_NOT_READY');
+            editorDirty=input.params.dirty;
+            if(input.params.operation)pending.finish(new Error('UPDATE_OPERATION_ACTIVE'));
+            else pending.finish(null,confirmDiscard());
+          }else{if('operation'in input.params)throw new Error('INVALID_REQUEST');editorDirty=input.params.dirty;}
+          return{ok:true,result:{recorded:true}};
+        }
         if(['create','open','pick','home','join'].includes(input.action)&&!confirmDiscard())return{ok:true,result:controller.overview()};
         return {ok:true,result:await controller.perform(input.action,input.params)};
       } catch(error) {return {ok:false,error:safeError(error)};}
     });
     Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'Mesh',submenu:[{role:'about'},{type:'separator'},
       {label:'Vaults',click:()=>{if(confirmDiscard())controller.perform('home',{}).catch(()=>{});}},{label:'Check for updates',click:()=>controller.perform('updates',{}).catch(()=>{})},
+      {label:'Restart to update',click:()=>restartUpdate()},
       {type:'separator'},{role:'quit'}]},{label:'Edit',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},
       {label:'View',submenu:[{role:'togglefullscreen'}]}]));
     window.once('ready-to-show',()=>window.show());await window.loadURL(ORIGIN+'/');
-    window.on('close',event=>{if(!quitting&&!confirmDiscard())event.preventDefault();});
+    window.on('close',event=>{
+      if(quitting)return;
+      // Keep the usable window until confirmation and physical engine drain.
+      event.preventDefault();requestGracefulQuit().catch(()=>{});
+    });
     refreshTimer=setInterval(()=>controller.refresh().catch(()=>{}),15000);refreshTimer.unref();
     powerMonitor.on('resume',()=>controller.refresh().catch(()=>{}));
     app.on('activate',()=>{if(window&&!window.isDestroyed())window.show();});
   }).catch(()=>{dialog.showErrorBox('Mesh could not start','Mesh could not open its private application storage. No vault was changed.');app.quit();});
   app.on('before-quit',event=>{
-    if(quitting||!controller)return;event.preventDefault();if(!confirmDiscard())return;quitting=true;clearInterval(refreshTimer);
-    controller.close().then(()=>app.quit()).catch(()=>{quitting=false;dialog.showErrorBox('Mesh engine has not stopped','Mesh could not confirm engine termination. This vault owner is retained; inspect the local engine before closing or opening another vault.');});
+    if(quitting||!controller)return;event.preventDefault();requestGracefulQuit().catch(()=>{});
   });
   app.on('window-all-closed',()=>app.quit());
 }

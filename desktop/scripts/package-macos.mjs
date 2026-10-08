@@ -59,6 +59,7 @@ try{
   const core=path.join(staging,'mesh-core');await fs.mkdir(core);await fs.copyFile(binary,path.join(core,'mesh-desktop-core'));await fs.chmod(path.join(core,'mesh-desktop-core'),0o755);await fs.writeFile(path.join(core,'core.json'),JSON.stringify(manifest));
   const packageDirectories=await packager({dir:application,out:output,name:'Mesh',platform:'darwin',arch,electronVersion:packageJSON.devDependencies.electron,electronZipDir:runtime,
     icon,appBundleId:'com.brightinteraction.mesh.desktop',appVersion:packageJSON.version,buildVersion:packageJSON.version,
+    extendInfo:{ElectronSquirrelPreventDowngrades:true},
     asar:true,overwrite:false,prune:true,ignore:[/^\/mesh-core(?:\/|$)/],extraResource:[core],osxSign:false,osxNotarize:false});
   const apps=[];
   for(const directory of packageDirectories){
