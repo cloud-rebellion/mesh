@@ -24,19 +24,25 @@ async function heldBlob(root,write){
   }catch(e){await writer?.close().catch(()=>{});await reader?.close().catch(()=>{});await fs.rm(directory,{recursive:true,force:true});throw e;}
 }
 // No ambient cookie/auth/proxy/Range headers. Node HTTPS does not follow redirects.
-function transfer(url,{limit,size,sha256,kind,writer,request=https.get,timeout=120000}){
+function transfer(url,{limit,size,sha256,kind,writer,request=https.get,timeout=120000,signal}){
   if(typeof url!=='string'||!/^https:\/\/mesh\.brightinteraction\.com\/desktop\/releases\/(?:stable\/darwin-(?:arm64|x64)\.json|\d+\.\d+\.\d+\/Mesh-\d+\.\d+\.\d+-(?:arm64|x64)\.zip)$/.test(url))return Promise.reject(new Error('FORBIDDEN_UPDATE_URL'));
   return new Promise((resolve,reject)=>{
-    let settled=false,response,req,total=0,hash=createHash('sha256');
-    const finish=error=>{if(settled)return;settled=true;clearTimeout(timer);if(error){response?.destroy();req?.destroy();reject(error);}else resolve({size:total,sha256:hash.digest('hex')});};
+    let settled=false,response,req,bodyWork,total=0,hash=createHash('sha256');
+    const aborted=()=>finish(new Error('UPDATE_CHECK_CANCELLED'));
+    const finish=error=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener('abort',aborted);if(error){response?.destroy();req?.destroy();}
+      // Await any in-progress body/file write before its owner closes the FD.
+      const complete=()=>error?reject(error):resolve({size:total,sha256:hash.digest('hex')});
+      if(bodyWork)bodyWork.then(complete,complete);else complete();};
     const timer=setTimeout(()=>finish(new Error('UPDATE_TRANSFER_FAILED')),timeout);
-    try{req=request(url,{agent:false,minVersion:'TLSv1.2',headers:{Accept:kind==='metadata'?'application/json':'application/zip, application/octet-stream'},timeout:30000},async res=>{
+    signal?.addEventListener('abort',aborted,{once:true});if(signal?.aborted){aborted();return;}
+    try{req=request(url,{agent:false,minVersion:'TLSv1.2',headers:{Accept:kind==='metadata'?'application/json':'application/zip, application/octet-stream'},timeout:30000},res=>{
+      if(settled){res.destroy();return;}
       response=res;const length=res.headers['content-length'],type=(res.headers['content-type']||'').split(';')[0].trim().toLowerCase();
       if(res.statusCode!==200||res.headers.location||res.headers['content-range']||res.headers['content-encoding']&&res.headers['content-encoding']!=='identity'||(length!==undefined&&(!/^(0|[1-9]\d*)$/.test(length)||!Number.isSafeInteger(Number(length))||Number(length)>limit||size!==undefined&&Number(length)!==size))||!(kind==='metadata'?type==='application/json':['application/zip','application/octet-stream'].includes(type))){finish(new Error('UPDATE_TRANSFER_FAILED'));return;}
-      try{for await(const part of res){if(settled)return;const bytes=Buffer.from(part);total+=bytes.length;if(total>limit||size!==undefined&&total>size)throw new Error('UPDATE_INTEGRITY_FAILED');hash.update(bytes);let at=0;while(at<bytes.length){const result=await writer.write(bytes,at,bytes.length-at,null);if(!result.bytesWritten)throw new Error('UPDATE_TRANSFER_FAILED');at+=result.bytesWritten;}}
+      bodyWork=Promise.resolve().then(async()=>{try{for await(const part of res){if(settled)return;const bytes=Buffer.from(part);total+=bytes.length;if(total>limit||size!==undefined&&total>size)throw new Error('UPDATE_INTEGRITY_FAILED');hash.update(bytes);let at=0;while(at<bytes.length){if(settled)return;const result=await writer.write(bytes,at,bytes.length-at,null);if(!result.bytesWritten)throw new Error('UPDATE_TRANSFER_FAILED');at+=result.bytesWritten;}}
         if(size!==undefined&&total!==size||sha256&&hash.copy().digest('hex')!==sha256)throw new Error('UPDATE_INTEGRITY_FAILED');finish();
-      }catch(error){finish(error);}
-    });req.on('error',()=>finish(new Error('UPDATE_TRANSFER_FAILED')));req.on('timeout',()=>finish(new Error('UPDATE_TRANSFER_FAILED')));
+      }catch(error){finish(error);}});
+    });req.on('error',()=>finish(new Error('UPDATE_TRANSFER_FAILED')));req.on('timeout',()=>finish(new Error('UPDATE_TRANSFER_FAILED')));if(settled)req.destroy();
     }catch{finish(new Error('UPDATE_TRANSFER_FAILED'));}
   });
 }
@@ -74,24 +80,26 @@ class PreparedUpdater {
     Object.assign(this,{native,installed:structuredClone(installed),admit,ledger,request,temporary,stageTimeout});this.state='idle';this.blobs=[];this.release=null;this.flight=null;
   }
   status(){const reasons={idle:'Update preparation is configured.',checking:'Checking the approved release channel.',available:'A verified update is downloaded. Restart after saving your work.',quiescing:'Preparing a safe restart.',staging:'The vault is closed while the native updater stages the admitted release.',ready:'The native update is ready to restart.',uncertain:'The native update outcome is uncertain. Keep this application open and inspect its state before another attempt.',failed:'The update was refused. No native staging was started.'};return Object.freeze({state:this.state,reason:reasons[this.state]||reasons.failed});}
-  async check(){
+  async check({signal}={}){
+    if(signal!==undefined&&!(signal instanceof AbortSignal))throw new Error('INVALID_UPDATE_CANCELLATION');
     if(this.flight||['quiescing','staging','ready','uncertain'].includes(this.state))throw new Error('UPDATE_BUSY');
-    const work=this.download();this.flight=work;try{return await work;}finally{this.flight=null;}
+    const work=this.download(signal);this.flight=work;try{return await work;}finally{this.flight=null;}
   }
-  async download(){
-    this.state='checking';let metadata,archive;
+  async download(signal){
+    const cancelled=()=>{if(signal?.aborted)throw new Error('UPDATE_CHECK_CANCELLED');};
+    this.state='checking';let metadata,archive,feed;
     try{
-      metadata=await heldBlob(this.temporary,w=>transfer(ORIGIN+`/desktop/releases/stable/darwin-${this.installed.arch}.json`,{kind:'metadata',limit:LIMITS.metadata,writer:w,request:this.request}));
-      this.installed.slots=await this.ledger.load();const release=parseRelease(await readAt(metadata.handle,metadata.size,0),this.installed);
-      if(await this.admit(release)!==true)throw new Error('UNAPPROVED_RELEASE');
-      archive=await heldBlob(this.temporary,w=>transfer(release.artifact.url,{kind:'archive',limit:LIMITS.archive,size:release.artifact.size,sha256:release.artifact.sha256,writer:w,request:this.request}));
-      await validateArchive(archive.handle,release);
+      cancelled();metadata=await heldBlob(this.temporary,w=>transfer(ORIGIN+`/desktop/releases/stable/darwin-${this.installed.arch}.json`,{kind:'metadata',limit:LIMITS.metadata,writer:w,request:this.request,signal}));
+      cancelled();this.installed.slots=await this.ledger.load();const release=parseRelease(await readAt(metadata.handle,metadata.size,0),this.installed);
+      if(await this.admit(release)!==true)throw new Error('UNAPPROVED_RELEASE');cancelled();
+      archive=await heldBlob(this.temporary,w=>transfer(release.artifact.url,{kind:'archive',limit:LIMITS.archive,size:release.artifact.size,sha256:release.artifact.sha256,writer:w,request:this.request,signal}));
+      cancelled();await validateArchive(archive.handle,release);cancelled();
       const normalized=Buffer.from(JSON.stringify({currentRelease:release.app_version,releases:[{version:release.app_version,updateTo:{version:release.app_version,url:archive.url,sha256:archive.sha256,size:archive.size,notes:'Verified Mesh application update.'}}]}));
-      const feed=await heldBlob(this.temporary,w=>w.writeFile(normalized));await metadata.dispose();metadata=null;
-      try{await this.ledger.remember(release);}catch(error){await feed.dispose();throw error;}
-      for(const previous of this.blobs)await previous.dispose();this.blobs=[archive,feed];archive=null;this.release=release;
+      feed=await heldBlob(this.temporary,w=>w.writeFile(normalized));await metadata.dispose();metadata=null;cancelled();
+      await this.ledger.remember(release);cancelled();
+      for(const previous of this.blobs)await previous.dispose();cancelled();this.blobs=[archive,feed];archive=null;feed=null;this.release=release;
       this.installed.slots||={};this.installed.slots[release.app_version]={sha256:release.artifact.sha256,size:release.artifact.size,source:release.core.source,arch:release.arch};this.state='available';return this.status();
-    }catch(error){await metadata?.dispose();await archive?.dispose();this.state='failed';throw error;}
+    }catch(error){await metadata?.dispose();await archive?.dispose();await feed?.dispose();this.state='failed';throw error;}
   }
   async install({drain}={}){
     if(this.flight||this.state!=='available'||typeof drain!=='function')throw new Error('UPDATE_NOT_READY');

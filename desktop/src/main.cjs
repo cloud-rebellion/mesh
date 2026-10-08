@@ -7,22 +7,23 @@ const { Storage }=require('./storage.cjs');
 const { Controller }=require('./controller.cjs');
 const { verifyBundle }=require('./identity.cjs');
 const { configureUpdater }=require('./updater.cjs');
+const { UpdateScheduler }=require('./update-scheduler.cjs');
 const { makeProtocol }=require('./protocol.cjs');
 app.enableSandbox();
 protocol.registerSchemesAsPrivileged([{scheme:'mesh-app',privileges:{standard:true,secure:true,supportFetchAPI:true,corsEnabled:true,stream:true}}]);
-let window=null,controller=null,quitting=false,refreshTimer=null,editorDirty=false,restartAcknowledgement=null,quitRequest=null;
+let window=null,controller=null,updateScheduler=null,quitting=false,refreshTimer=null,editorDirty=false,restartAcknowledgement=null,quitRequest=null;
 function confirmDiscard({record=true}={}){
   if(!editorDirty)return true;
   const choice=dialog.showMessageBoxSync(window,{type:'question',buttons:['Keep editing','Discard changes'],defaultId:0,cancelId:0,
     message:'Discard unsaved changes?',detail:'Save a draft or publish the note to preserve your work.'});
   if(choice!==1)return false;if(record)editorDirty=false;return true;
 }
-function confirmEditorForUpdate(token){
+function confirmEditorForUpdate(token,{automatic=false}={}){
   return new Promise((resolve,reject)=>{
     const frame=window?.webContents.mainFrame,selected=controller.selected,engine=controller.engine;
     const finish=(error,value)=>{clearTimeout(timer);restartAcknowledgement=null;error?reject(error):resolve(value);};
     const timer=setTimeout(()=>finish(new Error('UPDATE_EDITOR_NOT_READY')),5000);
-    restartAcknowledgement={token,frame,selected,engine,finish};
+    restartAcknowledgement={token,frame,selected,engine,finish,automatic};
     // Resend after registering the acknowledgement; an earlier state event may
     // already be queued. One token, current window/frame and vault only.
     controller.changed();
@@ -36,14 +37,15 @@ async function requestGracefulQuit(){
   if(quitting||!controller||quitRequest)return;
   // A ready native install has already drained the editor and original owner.
   // Staging/uncertain native states may install on quit and cannot use this path.
-  if(controller.updateLock){if(controller.updater.status().state==='ready'&&!controller.engine){quitting=true;app.quit();}return;}
+  if(controller.updateLock){if(controller.updater.status().state==='ready'&&!controller.engine){updateScheduler?.stop().catch(()=>{});quitting=true;clearInterval(refreshTimer);app.quit();}return;}
   if(!confirmDiscard({record:false}))return;
+  const discoveryPaused=updateScheduler?.pause()||Promise.resolve();
   quitRequest=controller.quitGracefully({confirmUnknown:async({write,join})=>{
     const detail=[write?'A note write has an unknown outcome. Mesh will not clear it or repeat it. Inspect the note after reopening.':'',join?'Team enrollment or its recovery is unsettled. Mesh will stop the local worker without redeeming the invitation again.':''].filter(Boolean).join(' ');
     return dialog.showMessageBoxSync(window,{type:'warning',buttons:['Keep Mesh open','Quit Mesh'],defaultId:0,cancelId:0,message:'Quit with an unresolved operation?',detail})===1;
   }});
-  try{await quitRequest;quitting=true;clearInterval(refreshTimer);app.quit();}
-  catch(error){if(error.message!=='QUIT_CANCELLED')dialog.showErrorBox('Mesh could not quit safely',safeError(error).message);}
+  try{await quitRequest;await discoveryPaused;await updateScheduler?.stop();quitting=true;clearInterval(refreshTimer);app.quit();}
+  catch(error){await discoveryPaused;updateScheduler?.resume();if(error.message!=='QUIT_CANCELLED')dialog.showErrorBox('Mesh could not quit safely',safeError(error).message);}
   finally{quitRequest=null;}
 }
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -73,7 +75,7 @@ else {
     window.webContents.on('will-navigate',event=>{if (event.url !== ORIGIN + '/') event.preventDefault();});
     window.webContents.on('will-frame-navigate',event=>{if (event.isMainFrame ? event.url !== ORIGIN + '/' : !viewerURL(event.url)) event.preventDefault();});
     window.webContents.on('will-attach-webview',event=>event.preventDefault());
-    window.webContents.on('render-process-gone',()=>{ if (controller) controller.close().catch(()=>{}); });
+    window.webContents.on('render-process-gone',()=>{updateScheduler?.pause().catch(()=>{});if (controller) controller.close().catch(()=>{}); });
     controller.on('change',value=>{if (window&&!window.isDestroyed()) window.webContents.send('mesh-desktop:state',value);});
     ipcMain.handle('mesh-desktop:action',async(event,input)=>{
       try { assertSender(event,window);exact(input,['action','params']);if(typeof input.action!=='string')throw new Error('INVALID_REQUEST');
@@ -84,8 +86,8 @@ else {
             if(!pending||input.params.restart_token!==pending.token||event.senderFrame!==pending.frame||controller.selected!==pending.selected||controller.engine!==pending.engine||typeof input.params.operation!=='boolean')throw new Error('UPDATE_EDITOR_NOT_READY');
             editorDirty=input.params.dirty;
             if(input.params.operation)pending.finish(new Error('UPDATE_OPERATION_ACTIVE'));
-            else pending.finish(null,confirmDiscard());
-          }else{if('operation'in input.params)throw new Error('INVALID_REQUEST');editorDirty=input.params.dirty;}
+            else pending.finish(null,pending.automatic?!input.params.dirty:confirmDiscard());
+          }else{if('operation'in input.params)throw new Error('INVALID_REQUEST');editorDirty=input.params.dirty;if(!editorDirty)updateScheduler?.wake();}
           return{ok:true,result:{recorded:true}};
         }
         if(['create','open','pick','home','join'].includes(input.action)&&!confirmDiscard())return{ok:true,result:controller.overview()};
@@ -103,8 +105,9 @@ else {
       // Keep the usable window until confirmation and physical engine drain.
       event.preventDefault();requestGracefulQuit().catch(()=>{});
     });
+    updateScheduler=new UpdateScheduler({controller,confirmEditor:token=>confirmEditorForUpdate(token,{automatic:true})});updateScheduler.start();
     refreshTimer=setInterval(()=>controller.refresh().catch(()=>{}),15000);refreshTimer.unref();
-    powerMonitor.on('resume',()=>controller.refresh().catch(()=>{}));
+    powerMonitor.on('resume',()=>{controller.refresh().catch(()=>{});updateScheduler.wake();});
     app.on('activate',()=>{if(window&&!window.isDestroyed())window.show();});
   }).catch(()=>{dialog.showErrorBox('Mesh could not start','Mesh could not open its private application storage. No vault was changed.');app.quit();});
   app.on('before-quit',event=>{

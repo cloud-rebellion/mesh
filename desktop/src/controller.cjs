@@ -113,22 +113,28 @@ class Controller extends EventEmitter {
     if(this.uncertainWrite)throw new Error('UPDATE_WRITE_UNCERTAIN');
     if(this.engine&&this.phase!=='vault'||['joining','join-uncertain','joined-preparing'].includes(this.card?.state)||['metadata-pending','join-uncertain'].includes(this.card?.sync.state))throw new Error('UPDATE_JOIN_UNSETTLED');
   }
-  async restartForUpdate({confirmEditor}){
+  async restartForUpdate({confirmEditor,automatic=false}){
     if(this.updateLock)throw new Error('UPDATE_RESTART_LOCKED');
     if(this.updater.status().state!=='available')throw new Error('UPDATE_NOT_READY');
-    this.assertRestartable();const engine=this.engine,selected=this.selected;
+    this.assertRestartable();const engine=this.engine,selected=this.selected,previousError=this.error;
     this.updateLock=true;this.restartToken=randomBytes(24).toString('hex');
-    let drained=false;
+    let drained=false,drainStarted=false;
     try{
       await this.updater.install({drain:async()=>{
         if(await confirmEditor(this.restartToken)!==true)throw new Error('UPDATE_EDITOR_NOT_READY');
         this.assertRestartable();if(this.engine!==engine||this.selected!==selected)throw new Error('VAULT_CHANGED');
         // Retain the selected owner if the OS does not confirm its exit.
-        await this.close({forUpdate:true});drained=true;
+        drainStarted=true;await this.close({forUpdate:true});drained=true;
       }});
     }catch(error){
       if(drained){this.phase='update-recovery';this.error=safeError(error);}
-      else{this.updateLock=false;this.restartToken=null;this.error=safeError(error);}
+      else{this.updateLock=false;this.restartToken=null;
+        // Internal scheduling may quietly defer only a refused editor/operation
+        // acknowledgement before close starts. A close failure can also have
+        // drained=false, so its physical phase must never be hidden here.
+        const quiet=automatic===true&&!drainStarted&&['UPDATE_EDITOR_NOT_READY','UPDATE_OPERATION_ACTIVE'].includes(error.message);
+        this.error=quiet?previousError:safeError(error);
+      }
       this.changed();throw error;
     }
   }
