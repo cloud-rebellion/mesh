@@ -43,6 +43,9 @@ const runtimeHashes={arm64:'e04e411b58a0a14375dd21b0ab4a378fd38930a702e4e20e322f
 const zipName=`electron-v44.7.0-darwin-${arch}.zip`,zipSource=path.join(electronZipDir,zipName);
 const zipStat=await fs.lstat(zipSource);
 if(!zipStat.isFile()||zipStat.isSymbolicLink()||zipStat.size===0||zipStat.size>256*1024*1024)throw new Error('Invalid pinned Electron archive.');
+const icon=path.join(root,'assets/mesh.icns'),iconStat=await fs.lstat(icon);
+if(!iconStat.isFile()||iconStat.isSymbolicLink()||iconStat.size<8||iconStat.size>1024*1024)throw new Error('Invalid Mesh application icon.');
+const iconBytes=await fs.readFile(icon);if(iconBytes.subarray(0,4).toString('ascii')!=='icns'||iconBytes.readUInt32BE(4)!==iconBytes.length)throw new Error('Invalid Mesh ICNS container.');
 const output=path.join(root,'out',`${packageJSON.version}-${arch}`);
 try{await fs.lstat(output);throw new Error('Output already exists; immutable review bundles are never replaced.');}catch(e){if(e.code!=='ENOENT')throw e;}
 const staging=await fs.mkdtemp(path.join(os.tmpdir(),'mesh-desktop-package-'));
@@ -55,7 +58,7 @@ try{
   const manifest={...identity,sha256:createHash('sha256').update(await fs.readFile(binary)).digest('hex')};
   const core=path.join(staging,'mesh-core');await fs.mkdir(core);await fs.copyFile(binary,path.join(core,'mesh-desktop-core'));await fs.chmod(path.join(core,'mesh-desktop-core'),0o755);await fs.writeFile(path.join(core,'core.json'),JSON.stringify(manifest));
   const packageDirectories=await packager({dir:application,out:output,name:'Mesh',platform:'darwin',arch,electronVersion:packageJSON.devDependencies.electron,electronZipDir:runtime,
-    appBundleId:'com.brightinteraction.mesh.desktop',appVersion:packageJSON.version,buildVersion:packageJSON.version,
+    icon,appBundleId:'com.brightinteraction.mesh.desktop',appVersion:packageJSON.version,buildVersion:packageJSON.version,
     asar:true,overwrite:false,prune:true,ignore:[/^\/mesh-core(?:\/|$)/],extraResource:[core],osxSign:false,osxNotarize:false});
   const apps=[];
   for(const directory of packageDirectories){

@@ -145,6 +145,7 @@
     G = data;
     G.communities = G.communities || []; // tolerate a graph indexed before community detection
     G.edges = G.edges || [];
+    G.collection_edges = G.collection_edges || [];
     resize();
     if (!G.nodes || G.nodes.length === 0) return showEmpty();
     for (const c of G.communities) { c.color = safeColor(c.color); commColor.set(c.id, c.color); }
@@ -194,20 +195,24 @@
 
   const adj = new Map();
   let edgeIdx = null;        // Int32Array of [a, b] node-index pairs, self-loops and dangling ends dropped
+  let collectionPair = null; // visual membership lines; semantic edges win overlapping pairs
+  const navigationEdges = () => [...G.edges, ...G.collection_edges];
   function buildAdjacency() {
     for (const n of G.nodes) adj.set(n.id, []);
     // one link per unordered pair (key min*N+max): A->B plus B->A, or a repeated link,
     // would double that spring and the degree the springs are normalised by
-    const ei = [], seen = new Set(), N = G.nodes.length;
-    for (const e of G.edges) {
+    const ei = [], memberships = [], seen = new Set(), N = G.nodes.length;
+    for (const e of navigationEdges()) {
       if (e.source === e.target || !adj.has(e.source) || !adj.has(e.target)) continue;
       const a = nodeIndex.get(e.source), b = nodeIndex.get(e.target), k = a < b ? a * N + b : b * N + a;
       if (seen.has(k)) continue;
       seen.add(k);
       adj.get(e.source).push(e.target); adj.get(e.target).push(e.source);
       ei.push(a, b);
+      memberships.push(e.rel === "collection-membership" ? 1 : 0);
     }
     edgeIdx = new Int32Array(ei);
+    collectionPair = new Uint8Array(memberships);
     deg = new Int32Array(G.nodes.length);
     for (const i of edgeIdx) deg[i]++;
     // charge: a hub pushes harder, so its burst has room round it. It is the note's mass
@@ -280,13 +285,14 @@
     for (let j = 0; j < edgeIdx.length; j += 2) {
       const a = edgeIdx[j], b = edgeIdx[j + 1];
       const slot = nodeSlot[a] === nodeSlot[b] ? nodeSlot[a] : -1, spoke = par[a] === b || par[b] === a;
-      const key = spoke ? slot - gCount - 1 : slot; // spokes: their own buckets, below -1
-      (buckets.get(key) || buckets.set(key, []).get(key)).push(a, b);
+      const membership = !!collectionPair[j >> 1], key = `${slot}/${spoke}/${membership}`;
+      if (!buckets.has(key)) buckets.set(key, { slot, spoke, membership, list: [] });
+      buckets.get(key).list.push(a, b);
     }
-    edgeBuckets = [...buckets].map(([key, list]) => {
-      const spoke = key < -1, k = spoke ? key + gCount + 1 : key, c = k < 0 ? null : rgb(gColors[k]);
+    edgeBuckets = [...buckets.values()].map(({ slot: k, spoke, membership, list }) => {
+      const c = k < 0 ? null : rgb(gColors[k]);
       const wa = spoke ? WEB_A * SPOKE_A : k < 0 ? WEB_A * BRIDGE_A : WEB_A;
-      return { slot: k, pairs: list, stroke: c ? `rgba(${c.r},${c.gg},${c.b},0.075)` : "rgba(150,165,205,0.045)",
+      return { slot: k, pairs: list, membership, stroke: c ? `rgba(${c.r},${c.gg},${c.b},0.075)` : "rgba(150,165,205,0.045)",
         web: c ? `rgba(${(c.r + 170) >> 1},${(c.gg + 175) >> 1},${(c.b + 195) >> 1},${wa})` : `rgba(165,172,195,${wa * 0.8})` };
     });
     // the springs (see simStep), per link: strength and rest length. A note's link to its
@@ -932,6 +938,7 @@
     const emph = [];
     ctx.lineWidth = Math.max(0.5, 0.65 * z);
     for (const bk of edgeBuckets) {
+      ctx.setLineDash(bk.membership ? [3, 4] : []);
       ctx.strokeStyle = galaxy ? bk.stroke : bk.web;
       ctx.globalAlpha = neighborSet ? 0.45 : (spotlight != null && gSlot.get(spotlight) !== bk.slot ? 0.25 : 1);
       ctx.beginPath();
@@ -944,6 +951,7 @@
       }
       ctx.stroke();
     }
+    ctx.setLineDash([]);
     ctx.globalAlpha = 1;
     if (emph.length) {
       ctx.strokeStyle = "rgba(245,242,236,0.55)"; ctx.lineWidth = Math.max(0.9, 1.2 * z); ctx.beginPath();
@@ -1171,6 +1179,8 @@
     // fragment or a decoded neighbour; the line is a positive integer whatever the graph says
     const editor = "vscode://file/" + joinPath(G.meta.vault, n.path).split("/").map(encodeURIComponent).join("/") + ":" + Math.max(1, n.line | 0);
     const tags = (n.tags || []).map((x) => `<span class="chip">#${esc(x)}</span>`).join("");
+    const collections = (n.collections || []).filter((id) => byId.has(id)).map((id) =>
+      `<button class="btn ghost collection-link" data-id="${esc(id)}">${esc(byId.get(id).label || id)}</button>`).join("");
     card.innerHTML = `
       <h2><span class="swatch" style="background:${esc(color)}"></span>${esc(n.label || n.id)}</h2>
       <div class="path">${esc(n.path)}</div>
@@ -1181,6 +1191,7 @@
         <span>orbit <b>${n.orbit | 0}</b></span>
       </div>
       ${tags ? `<div class="tags">${tags}</div>` : ""}
+      ${collections ? `<div class="tags">Collections ${collections}</div>` : ""}
       <div class="actions">
         <button class="btn" id="read">Read note</button>
         <button class="btn ghost" id="copy">copy path</button>
@@ -1193,6 +1204,9 @@
     card.classList.remove("hidden");
     const rd = $("read");
     if (rd) rd.onclick = () => window.Mesh && Mesh.openNote && Mesh.openNote(n.id);
+    card.querySelectorAll(".collection-link").forEach((button) => {
+      button.onclick = () => { focusNodeById(button.dataset.id); if (Mesh.openNote) Mesh.openNote(button.dataset.id); };
+    });
     const cp = $("copy");
     if (cp) cp.onclick = () => navigator.clipboard && navigator.clipboard.writeText(joinPath(G.meta.vault, n.path));
   }
@@ -1480,7 +1494,7 @@
     const dom = grouping === "domain";
     const saved = gl3dCam; gl3dCam = null;
     let inst = null;
-    gl3d = window.Mesh3D.init(canvas3d, G, {
+    gl3d = window.Mesh3D.init(canvas3d, { ...G, edges: navigationEdges() }, {
       commColor: dom ? domainColor : commColor,
       groups: dom ? G.domains : G.communities,
       groupField: dom ? "domain" : "community",
@@ -1579,7 +1593,7 @@
   function setHint(v) { const h = $("hint"); if (h) h.textContent = HINTS[v === "galaxy3d" ? "galaxy3d" : "flat"]; }
 
   // ---- chrome / states ----
-  function setStats() { $("stats").textContent = `${G.meta.node_count} notes / ${G.meta.edge_count} links / ${activeGroups().length} ${grouping === "domain" ? "topics" : "clusters"}`; }
+  function setStats() { $("stats").textContent = `${G.meta.node_count} notes / ${G.meta.edge_count} links / ${G.meta.collection_edge_count || 0} collection memberships / ${activeGroups().length} ${grouping === "domain" ? "topics" : "clusters"}`; }
   function buildLegend() {
     const top = activeGroups().slice(0, 9).filter((c) => c.label);
     if (!top.length) return;
@@ -1660,14 +1674,26 @@
     const seen = new Set();
     for (const c of G.communities.slice().sort((a, b) => (b.size | 0) - (a.size | 0))) { if (byComm.has(c.id)) { order.push(c); seen.add(c.id); } }
     for (const [cid, mem] of byComm) if (!seen.has(cid)) order.push({ id: cid, label: "#" + cid, color: commColor.get(cid) || "#7c766e", size: mem.length });
+    // Collections are authored navigation, independent of emergent communities.
+    // A note may appear in several; membership order never establishes a home.
+    const byCollection = new Map();
+    for (const edge of G.collection_edges) {
+      const collection = byId.get(edge.target), member = byId.get(edge.source);
+      if (!collection || !member) continue;
+      if (!byCollection.has(collection.id)) byCollection.set(collection.id, new Map([[collection.id, collection]]));
+      byCollection.get(collection.id).set(member.id, member);
+    }
+    const collectionGroups = [...byCollection].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([id, members]) => ({
+      id, label: "Collection · " + (byId.get(id).label || id), color: groupColorOf(byId.get(id)), members: [...members.values()],
+    }));
 
     const typeSummary = (mem) => {
       const t = new Map();
       for (const m of mem) { const k = m.type || "note"; t.set(k, (t.get(k) || 0) + 1); }
       return [...t.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v} ${esc(k)}`).join(" &middot; ");
     };
-    list.innerHTML = order.map((c) => {
-      const mem = (byComm.get(c.id) || []).slice().sort((a, b) => (b.degree | 0) - (a.degree | 0) || ((a.label || a.id) < (b.label || b.id) ? -1 : 1));
+    list.innerHTML = [...collectionGroups, ...order].map((c) => {
+      const mem = (c.members || byComm.get(c.id) || []).slice().sort((a, b) => (b.degree | 0) - (a.degree | 0) || ((a.label || a.id) < (b.label || b.id) ? -1 : 1));
       const notes = mem.map((n) =>
         `<button class="exp-note" data-id="${esc(n.id)}" data-name="${esc((n.label || n.id) + " " + (n.path || ""))}">` +
         `<span class="exp-type">${esc(n.type || "note")}</span>` +
