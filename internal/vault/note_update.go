@@ -69,7 +69,7 @@ func editableNoteSnapshot(rel, id string, data []byte, draft bool) (*NoteSnapsho
 	if mixedHistoricalProse {
 		return nil, fmt.Errorf("%w: historical prose requires reviewed migration before updating", ErrInvalidSpec)
 	}
-	authored, err := ReadAuthoring(fm, body)
+	authored, err := readAuthoring(fm, body, true)
 	if err != nil {
 		return nil, fmt.Errorf("%w: existing body cannot be safely decoded for editing", ErrInvalidSpec)
 	}

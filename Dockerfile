@@ -10,7 +10,7 @@
 # or `make install`; this exists for people who would rather run Mesh in a container.
 
 # ---------- build stage ----------
-FROM golang:1.26.6-alpine AS builder
+FROM golang:1.26.9-alpine@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS builder
 RUN apk add --no-cache git
 WORKDIR /app
 # The exact commit and release semver are stamped separately: diagnostics keep the SHA,

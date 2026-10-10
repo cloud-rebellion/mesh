@@ -295,6 +295,13 @@ type AuthoringContent struct {
 // ReadAuthoring reads authored body sections using the same fence-aware heading
 // scanner as Mesh. It does not fabricate modern meaning for legacy fields.
 func ReadAuthoring(fm *Frontmatter, body string) (AuthoringContent, error) {
+	return readAuthoring(fm, body, false)
+}
+
+// readAuthoring's lossless mode is reserved for editable snapshots, which also
+// require an exact canonical-body comparison. Presentation readers retain their
+// tolerant whitespace handling; edits must preserve authored Markdown bytes.
+func readAuthoring(fm *Frontmatter, body string, lossless bool) (AuthoringContent, error) {
 	out := AuthoringContent{Sections: map[string]string{}, Legacy: ReadLegacy(fm)}
 	if fm == nil {
 		return out, errors.New("missing frontmatter")
@@ -312,7 +319,7 @@ func ReadAuthoring(fm *Frontmatter, body string) (AuthoringContent, error) {
 		return out, fmt.Errorf("template %q does not match type %q", t.ID, fm.Type)
 	}
 	out.Version = t.Version
-	spans := authoredSpans(body)
+	spans := authoredSpansMode(body, lossless)
 	summarySeen := false
 	for _, span := range spans {
 		if span.sectionKey == "summary" || (span.sectionKey == "" && span.heading == "Summary") {
@@ -388,7 +395,7 @@ func ReadAuthoring(fm *Frontmatter, body string) (AuthoringContent, error) {
 		if err != nil {
 			return out, err
 		}
-		fields, err := blockFields(span.text, bt)
+		fields, err := blockFieldsMode(span.text, bt, lossless)
 		if err != nil {
 			return out, fmt.Errorf("block %q: %w", meta.ID, err)
 		}
@@ -422,6 +429,10 @@ type bodySpan struct {
 }
 
 func authoredSpans(body string) []bodySpan {
+	return authoredSpansMode(body, false)
+}
+
+func authoredSpansMode(body string, lossless bool) []bodySpan {
 	visible, _ := StripNonContent(body)
 	lines, masks := strings.Split(body, "\n"), strings.Split(visible, "\n")
 	var out []bodySpan
@@ -443,6 +454,12 @@ func authoredSpans(body string) []bodySpan {
 			}
 		}
 		current.text = strings.TrimSpace(text)
+		if lossless && current.sectionKey != "" {
+			current.text = authoredFraming(text)
+		} else if lossless && current.block.ID != "" {
+			// Keep the final field's LF framing for blockFieldsMode to remove.
+			current.text = strings.TrimPrefix(text, "\n")
+		}
 		out = append(out, current)
 	}
 	for i, mask := range masks {
@@ -487,13 +504,29 @@ func blockMarker(line string) (BlockMetadata, bool) {
 }
 
 func blockFields(body string, t BlockTemplate) (map[string]string, error) {
+	return blockFieldsMode(body, t, false)
+}
+
+// authoredFraming removes only the renderer-owned blank line after a heading
+// and the one separator LF retained by the line-span join. Any extra LF,
+// indentation, tabs or hard-break spaces remain authored content. The editing
+// caller's canonical comparison still rejects missing framing or extra prose.
+func authoredFraming(text string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(text, "\n"), "\n")
+}
+
+func blockFieldsMode(body string, t BlockTemplate, lossless bool) (map[string]string, error) {
 	out := map[string]string{}
 	visible, _ := StripNonContent(body)
 	lines, masks := strings.Split(body, "\n"), strings.Split(visible, "\n")
 	key, start := "", 0
 	finish := func(end int) {
 		if key != "" {
-			out[key] = strings.TrimSpace(strings.Join(lines[start:end], "\n"))
+			text := strings.Join(lines[start:end], "\n")
+			out[key] = strings.TrimSpace(text)
+			if lossless {
+				out[key] = authoredFraming(text)
+			}
 		}
 	}
 	for i, mask := range masks {
