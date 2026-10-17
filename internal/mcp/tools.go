@@ -1553,11 +1553,7 @@ func (s *Server) sectionContext(ctx context.Context, id, rel, doc string, import
 			fields["legacy_"+key] = text
 		}
 	}
-	for _, key := range []string{"summary", "applicability", "prerequisites", "limitations", "evidence", "verification", "dependencies", "cause", "root_cause", "resolution", "impact", "consequences", "recovery"} {
-		if text := contextualSectionText(fm, noteBody, key); text != "" {
-			fields[key] = text
-		}
-	}
+	addPurposeSectionContext(fields, fm, noteBody)
 
 	addSelectedBlockContext(fields, fm, noteBody, anchors)
 	// The source file may have no retirement mark at all. Resolve the current

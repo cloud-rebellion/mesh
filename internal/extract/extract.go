@@ -102,12 +102,7 @@ func Digest(path string, maxChars int) (string, DigestStats, error) {
 		if TranscriptWritebackCall(sc.Bytes()) {
 			st.HadWriteback = true
 		}
-		var ln tLine
-		if json.Unmarshal(sc.Bytes(), &ln) != nil || ln.Message.Role == "" {
-			continue
-		}
-		role := ln.Message.Role
-		blocks := decodeContent(ln.Message.Content)
+		role, blocks := digestTranscriptRecord(sc.Bytes())
 		for _, bl := range blocks {
 			switch bl.Type {
 			case "text":
@@ -217,7 +212,7 @@ func clip(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return strings.ToValidUTF8(s[:n], "") + "…"
 }
 
 const extractSystem = `You extract durable, reusable engineering knowledge from a coding-agent session transcript into review drafts for Mesh.
@@ -286,6 +281,11 @@ const (
 // Extract asks the model to pull qualifying write-back notes from a digest. Returns an
 // empty slice (not an error) when there is nothing worth recording.
 func Extract(ctx context.Context, client llm.Client, digest string) ([]Candidate, error) {
+	// Unsupported/non-narrative transcripts must not provoke a paid completion
+	// or ask a model to invent knowledge without any source material.
+	if strings.TrimSpace(digest) == "" {
+		return []Candidate{}, nil
+	}
 	out, err := client.Complete(ctx, extractionSystem(), digestBegin+"\n"+digest+"\n"+digestEnd+"\n\nReturn the JSON array now.")
 	if err != nil {
 		return nil, err

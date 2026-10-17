@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Bright Interaction AB
 
 // Package llm is the Mesh BYOAI chat boundary for the sync-curator (S2.1). It is
-// stdlib-only (no SDK) and speaks three backends behind one Complete interface:
+// stdlib-only (no SDK) and speaks four backends behind one Complete interface:
 //
 //   - cli (the default): the team's existing coding-agent CLI (e.g. `claude -p`),
 //     already authenticated in the dev's IDE, invoked without agent tools or
@@ -10,6 +10,8 @@
 //     Custom adapters require an explicit completion-only JSON contract.
 //   - anthropic: Anthropic Messages API with an explicit key (best when running
 //     headless/always-on where no IDE CLI is logged in).
+//   - openai: public OpenAI Responses API, completion-only streaming, with an
+//     explicit per-client key and model. No CLI authentication or tool executor.
 //   - local: any OpenAI-compatible /v1/chat/completions endpoint (e.g. a local
 //     Ollama), so a sovereign vault never egresses.
 //
@@ -264,12 +266,13 @@ const (
 
 // NewFromEnv builds the curator's LLM client from MESH_CURATOR_* env:
 //
-//	MESH_CURATOR_AGENT   cli (default) | anthropic | local
-//	MESH_CURATOR_MODEL   model id (anthropic default claude-sonnet-4-6; required for local)
-//	MESH_CURATOR_MAXTOK  max output tokens (default 8192; anthropic/local only)
+//	MESH_CURATOR_AGENT   cli (default) | anthropic | openai | local
+//	MESH_CURATOR_MODEL   model id (anthropic default claude-sonnet-4-6; required for openai/local)
+//	MESH_CURATOR_MAXTOK  max output tokens (default 8192; API backends only)
 //	cli:       MESH_CURATOR_CMD (default "claude -p"), MESH_CURATOR_CMD_TIMEOUT (seconds)
 //	custom CLI: MESH_CURATOR_CLI_CONTRACT=mesh-completion-v1 (see docs/EXTRACTION.md)
 //	anthropic: MESH_ANTHROPIC_KEY (fallback ANTHROPIC_API_KEY), MESH_ANTHROPIC_BASE
+//	openai:    MESH_CURATOR_KEY + MESH_CURATOR_MODEL (both explicit; docs/OPENAI-RESPONSES.md)
 //	local:     MESH_CURATOR_ENDPOINT (e.g. http://localhost:11434/v1), MESH_CURATOR_KEY
 func NewFromEnv() (Client, error) {
 	return newFromEnvPrefix("MESH_CURATOR")
@@ -289,6 +292,9 @@ func NewJudgeFromEnv(fallback Client) (Client, bool) {
 	}
 	c, err := newFromEnvPrefix("MESH_JUDGE")
 	if err != nil || c == nil {
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("MESH_JUDGE_AGENT")), "openai") {
+			return openAIDeniedClient{}, false
+		}
 		return fallback, false
 	}
 	return c, true
@@ -304,7 +310,11 @@ func NewJudgePanelFromEnv(fallback Client) (judges []Client, independent bool) {
 		if !anyEnvWithPrefix(p + "_") {
 			continue
 		}
-		if c, err := newFromEnvPrefix(p); err == nil && c != nil {
+		c, err := newFromEnvPrefix(p)
+		if (err != nil || c == nil) && strings.EqualFold(strings.TrimSpace(os.Getenv(p+"_AGENT")), "openai") {
+			return []Client{openAIDeniedClient{}}, false
+		}
+		if err == nil && c != nil {
 			judges = append(judges, c)
 		}
 	}
@@ -347,12 +357,13 @@ func newFromEnvPrefix(p string) (Client, error) {
 			temp = &f
 		}
 	}
-	// Every endpoint this constructor can reach comes from the PROCESS ENVIRONMENT
+	// Operator-configurable legacy endpoints come from the PROCESS ENVIRONMENT
 	// (<prefix>_ENDPOINT, MESH_ANTHROPIC_BASE), which no HTTP surface can write: the
 	// config API writes .mesh/config.toml only. That is operator authority, the same
 	// authority MESH_ALLOW_PRIVATE_LLM_ENDPOINT expresses, so a sovereign localhost
 	// model server is reachable without a second opt-in. Guarding it instead just made
 	// the documented `MESH_CURATOR_AGENT=local` setup fail with an SSRF refusal.
+	// The openai case instead uses a separate public-only client and fixed origin.
 	hc := safehttp.OperatorLLMClient(120 * time.Second)
 
 	switch agent {
@@ -380,6 +391,8 @@ func newFromEnvPrefix(p string) (Client, error) {
 		}
 		base := firstNonEmpty(os.Getenv("MESH_ANTHROPIC_BASE"), defaultAnthropicBase)
 		return &anthropic{base: strings.TrimRight(base, "/"), key: key, model: model, maxTok: maxTok, temp: temp, hc: hc}, nil
+	case "openai":
+		return newOpenAIResponses(p, model)
 	case "local":
 		ep := strings.TrimRight(strings.TrimSpace(os.Getenv(p+"_ENDPOINT")), "/")
 		if ep == "" {
@@ -390,7 +403,7 @@ func newFromEnvPrefix(p string) (Client, error) {
 		}
 		return &openaiCompat{endpoint: ep, key: os.Getenv(p + "_KEY"), model: model, maxTok: maxTok, temp: temp, hc: hc}, nil
 	default:
-		return nil, fmt.Errorf("unknown %s_AGENT %q (want cli|anthropic|local)", p, agent)
+		return nil, fmt.Errorf("unknown %s_AGENT %q (want cli|anthropic|openai|local)", p, agent)
 	}
 }
 

@@ -55,3 +55,18 @@ delimiter strings cannot become column-zero protocol labels after truncation.
 Structural validation and process containment do not establish factual quality.
 Enable automatic fallback only after the installed provider and CLI pass actual
 containment and review-only acceptance; retain a reversible settings backup.
+
+The transcript digester reads Claude user/assistant message records and Codex
+persisted `response_item` records. For Codex it keeps user `input_text`, assistant
+`output_text` and bounded function/custom tool names. It omits raw arguments,
+patches, tool results, reasoning, images/audio, system/developer messages,
+inter-agent messages and session/turn metadata. The mirrored `event_msg` stream
+is ignored, avoiding duplicate narration. Unknown record types are skipped.
+Messaging-tool delivery represented as ordinary assistant text is also omitted
+when its envelope records `delivered_assistant_message` provenance.
+This reader does not reconstruct omitted or compacted historical evidence.
+The byte budget, UTF-8 clipping and indentation of embedded protocol labels
+apply to both formats. A structured writeback request remains only a duplicate
+signal; its success requires publication and readback evidence. Codex transcript
+support does not establish model quality, install a Stop hook or enable extraction.
+An empty/whitespace digest returns no candidates without contacting a provider.
