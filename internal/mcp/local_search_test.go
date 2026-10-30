@@ -16,6 +16,9 @@ import (
 func TestLocalOnlyReaderPreservesChoiceAfterPublicationEditAndReuse(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("MESH_RERANK_AGENT", "")
+	for _, key := range []string{"MESH_RERANK_ENDPOINT", "MESH_RERANK_MODEL", "MESH_EMBED_ENDPOINT", "MESH_EMBED_MODEL"} {
+		t.Setenv(key, "")
+	}
 	root := t.TempDir()
 	seedIndex(t, root)
 	startOwner(t, root)
@@ -33,6 +36,9 @@ func TestLocalOnlyReaderPreservesChoiceAfterPublicationEditAndReuse(t *testing.T
 	}
 	first := publishUpdateFixture(t, s, "Offline MCP initial finding")
 	id := first["id"].(string)
+	// Reranking needs more than one candidate. Keep a second matching card so
+	// the ordinary-constructor control exercises its configured failure path.
+	publishUpdateFixture(t, s, "Offline MCP initial finding alternative")
 	for _, summary := range []string{"First offline edit.", "Second offline edit with the same constructor."} {
 		prepared, rerr := s.toolPrepareUpdate(t.Context(), mustJSON(map[string]any{"id": id}))
 		if rerr != nil {
@@ -61,6 +67,9 @@ func TestLocalOnlyReaderPreservesChoiceAfterPublicationEditAndReuse(t *testing.T
 	defer normal.Close()
 	if err := normal.WaitReady(); err != nil {
 		t.Fatal(err)
+	}
+	if _, r := normal.snapshot(); !r.RerankActive() {
+		t.Fatal("normal constructor lost its configured reranker")
 	}
 	if _, rerr := normal.toolSearch(t.Context(), mustJSON(map[string]any{"query": "Offline MCP initial finding"})); rerr == nil {
 		t.Fatal("normal configured semantics silently changed")
