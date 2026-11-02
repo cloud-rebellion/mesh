@@ -34,6 +34,27 @@ func TestRenderMDSafeStripsHostileHTML(t *testing.T) {
 	}
 }
 
+func TestRenderMDSafeShortURLDestinations(t *testing.T) {
+	for _, tc := range []struct{ name, destination string }{
+		{"empty", ""},
+		{"one-byte", "."},
+		{"two-byte", ".."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if err := recover(); err != nil {
+					t.Fatalf("renderMDSafe panicked for destination %q: %v", tc.destination, err)
+				}
+			}()
+			const label = "Short destination label"
+			out := renderMDSafe([]byte("[" + label + "](" + tc.destination + ")"))
+			if !strings.Contains(out, label) {
+				t.Errorf("renderMDSafe dropped the link label for destination %q: %s", tc.destination, out)
+			}
+		})
+	}
+}
+
 // liveTags is what renderMDSafe is allowed to emit. Anything outside this set in the
 // parsed output means a note body managed to create an element, which is the whole
 // attack: the SPA assigns this HTML to innerHTML.
