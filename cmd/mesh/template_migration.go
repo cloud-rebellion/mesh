@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -56,10 +57,17 @@ func authoringMigrationApplyCmd() *cobra.Command {
 			return fmt.Errorf("exact reviewed IDs and preview hash are required")
 		}
 		receipts, err := vault.ApplyAuthoringMigration(cmd.Context(), root, &preview, vault.MigrationApproval{PreviewHash: previewHash, IDs: ids})
-		if err != nil {
-			return err
+		// A later entry can fail after earlier notes have already been applied.
+		// Preserve those receipts while still returning the original apply error.
+		if len(receipts) > 0 || err == nil {
+			if outputErr := json.NewEncoder(cmd.OutOrStdout()).Encode(receipts); outputErr != nil {
+				return errors.Join(err, fmt.Errorf("write migration receipts; note changes may already have completed: %w", outputErr))
+			}
 		}
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(receipts)
+		if err != nil && len(receipts) > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Migration stopped with %d receipt(s); inspect stdout and the per-note journals before retrying.\n", len(receipts))
+		}
+		return err
 	}}
 	c.Flags().StringVar(&root, "vault", ".", "vault root")
 	c.Flags().StringVar(&previewPath, "preview", "", "reviewed preview JSON file")

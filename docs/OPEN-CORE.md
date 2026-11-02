@@ -45,8 +45,9 @@ The collaboration server and the AI layer, the monetized value:
 - The `cmd/mesh` hub-harness tests (`conflicts_test.go`, `cli_receipts_test.go`, `resolve_ordering_test.go`, `sync_local_reconcile_test.go`) and the `pkg/meshclient` ones (`e2e_test.go`, `events_test.go`, `tombstone_test.go`): integration tests that stand up a real hub to exercise the open sync client and conflicts command, so they need the pro hub and are stripped with it. Each set strips together, because within a set one file defines the harness the others reuse (`conflicts_test.go` provides `runSub`/`parkedConflict`; `e2e_test.go` provides `setupHub`), and removing the definition without its users leaves the mirror's own suite unable to compile. The production code they cover ships open; the private monorepo runs the full suite. (`pkg/meshclient/vault_test.go` is hub-free and stays in the mirror.)
 - Future: cross-vault federation, team-scale collaboration analytics, pro graph functions. These belong here, behind the service/license, not as a flag in the open binary.
 
-The tagged `cmd/mesh/ui_signin_pro_test.go` SSO/browser-approval integration also
-requires the private hub and is stripped. A build tag controls compilation, not
+The tagged `cmd/mesh/ui_signin_pro_test.go` SSO/browser-approval integration and
+`internal/web/pending_repository_lock_pro_test.go` publication-lock integration
+require the private hub and are stripped. A build tag controls compilation, not
 publication: the mirror preflight checks surviving source headers independently
 of the default build's import graph.
 
@@ -65,6 +66,7 @@ internal/flarereport
 cmd/mesh/conflicts_test.go  cmd/mesh/cli_receipts_test.go
 cmd/mesh/resolve_ordering_test.go  cmd/mesh/sync_local_reconcile_test.go
 cmd/mesh/ui_signin_pro_test.go
+internal/web/pending_repository_lock_pro_test.go
 pkg/meshclient/e2e_test.go  pkg/meshclient/events_test.go  pkg/meshclient/tombstone_test.go
 
 # files that build or run the pro hub

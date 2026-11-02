@@ -4,11 +4,13 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -58,9 +60,11 @@ func (s *Server) handlePendingList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"pending": reviews, "templates": vault.Templates(), "block_templates": vault.BlockTemplates()})
 }
 
-func (s *Server) handlePendingPromote(w http.ResponseWriter, r *http.Request) {
+// pendingPublicationAllowed is repeated after a queued publisher acquires the
+// repository lock, so policy changes which completed while it waited win.
+func (s *Server) pendingPublicationAllowed(w http.ResponseWriter, r *http.Request) bool {
 	if !s.requireAdmin(w, r) {
-		return
+		return false
 	}
 	// A non-nil predicate means folder ACLs are configured, even if this
 	// reviewer can read every path. Its audience cannot be inferred from scopes.
@@ -74,6 +78,33 @@ func (s *Server) handlePendingPromote(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.allowedPath(r) != nil || unprovenBreakGlass {
 		http.Error(w, "promotion is unavailable while folder permissions are configured", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+// Solo vaults without ordinary Git metadata keep their existing publication path.
+// An ordinary Git vault shares the Hub lock. Team mode cannot silently use a
+// different lock inode for a linked-worktree or symlink metadata layout.
+func (s *Server) pendingRepositoryLock(ctx context.Context) (func(), error) {
+	info, err := os.Lstat(filepath.Join(s.vaultRoot, ".git"))
+	if os.IsNotExist(err) {
+		return func() {}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode().IsRegular() && s.member == nil {
+		return func() {}, nil // standalone linked worktree; no supported Hub repo
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("pending publication requires ordinary Git metadata")
+	}
+	return vault.AcquireRepositoryOperationLock(ctx, s.vaultRoot)
+}
+
+func (s *Server) handlePendingPromote(w http.ResponseWriter, r *http.Request) {
+	if !s.pendingPublicationAllowed(w, r) {
 		return
 	}
 	var req struct {
@@ -94,6 +125,16 @@ func (s *Server) handlePendingPromote(w http.ResponseWriter, r *http.Request) {
 	// browser disconnect must not abandon it, while process shutdown must still cancel
 	// pre-publication work and let the durable compensation path take over afterward.
 	durableCtx := s.lifetimeContext()
+	release, err := s.pendingRepositoryLock(durableCtx)
+	if err != nil {
+		slog.Error("mesh ui: pending publication lock unavailable", "error", err)
+		http.Error(w, "publication unavailable; pending item retained", http.StatusServiceUnavailable)
+		return
+	}
+	defer release()
+	if !s.pendingPublicationAllowed(w, r) {
+		return
+	}
 	p, err := s.store.GetPendingContext(durableCtx, req.ID)
 	if err != nil {
 		http.Error(w, "unknown pending id", http.StatusNotFound)
@@ -127,6 +168,9 @@ func (s *Server) handlePendingPromote(w http.ResponseWriter, r *http.Request) {
 	// Publication uses the same durable writer as CLI/MCP. Browser disconnects
 	// cannot abandon bookkeeping after this file creation boundary.
 	res, err := vault.CreateNoteContext(durableCtx, s.vaultRoot, spec)
+	// Release before callbacks/index waits; those may themselves need repository
+	// access. The release is idempotent for every early-return path above.
+	release()
 	if err != nil {
 		// Never echo the raw error. Everything vault.CreateNote raises about the
 		// FILESYSTEM names the note's ABSOLUTE path, so a promote that hit an unwritable

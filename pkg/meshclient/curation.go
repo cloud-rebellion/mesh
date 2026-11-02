@@ -4,6 +4,7 @@
 package meshclient
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -16,11 +17,15 @@ import (
 // credentials (.mesh/credentials). Used by the mesh-curator to call the hub's
 // curation endpoints with the same token it syncs with.
 func ClientForVault(vaultDir string) (*Client, error) {
+	return ClientForVaultContext(context.Background(), vaultDir)
+}
+
+func ClientForVaultContext(ctx context.Context, vaultDir string) (*Client, error) {
 	creds, err := readCredentials(vaultDir)
 	if err != nil {
 		return nil, err
 	}
-	return New(creds.HubURL, creds.Token), nil
+	return NewWithContext(ctx, creds.HubURL, creds.Token), nil
 }
 
 // CurationJobs lists the hub's pending curation markers (metadata only).
