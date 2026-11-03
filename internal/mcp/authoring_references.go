@@ -11,6 +11,11 @@ import (
 	"github.com/bright-interaction/mesh/internal/vault"
 )
 
+// Include the supported related, collections and supersedes lists, plus the
+// original 128-reference prose allowance. Repetitions add no validation work;
+// different anchors still require independent validation.
+const maxAuthoringReferences = vault.MaxAuthoringRelated + 2*vault.MaxAuthoringList + 128
+
 // AuthoringReferences shares the writer's fence-aware reference scan with review
 // publication. Code contents remain literal examples; surrounding context is checked.
 func AuthoringReferences(spec vault.NewNoteSpec) ([]string, error) {
@@ -48,10 +53,22 @@ func AuthoringReferences(spec vault.NewNoteSpec) ([]string, error) {
 	for _, link := range parsed.Links {
 		refs = append(refs, link.Target)
 	}
-	if len(refs) > 128 {
-		return nil, fmt.Errorf("too many references")
+	unique := make([]string, 0, min(len(refs), maxAuthoringReferences))
+	seen := make(map[string]bool)
+	for _, ref := range refs {
+		// Match the validators' whitespace handling without collapsing anchors,
+		// case or invalid references that they must still reject.
+		ref = strings.TrimSpace(ref)
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		if len(unique) == maxAuthoringReferences {
+			return nil, fmt.Errorf("too many distinct references (maximum %d)", maxAuthoringReferences)
+		}
+		unique = append(unique, ref)
 	}
-	return refs, nil
+	return unique, nil
 }
 
 // AuthoringReferenceAnchorValid uses the same exact/ambiguous heading resolution
