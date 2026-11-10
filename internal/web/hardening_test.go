@@ -4,6 +4,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -116,21 +117,18 @@ func TestConfigKeyEnvScrubbedOnSave(t *testing.T) {
 	}
 }
 
-// GET /api/config leaks the internal embedding/rerank endpoints and the Dockyard
-// secret-bridge URL plus agent id. In member mode that is reconnaissance for any
-// resolvable client, viewers included, so it is admin-gated like every other config
-// route. Standalone mode is unaffected (requireAdmin is a no-op there).
-func TestGetConfigRequiresAdminInMemberMode(t *testing.T) {
+// Members can open Settings, but the shared operator configuration remains read-only
+// and sensitive endpoint/key-slot metadata is redacted. Writes remain admin-gated.
+func TestGetConfigMemberViewIsRedactedAndReadOnly(t *testing.T) {
 	h := memberServer(t).Handler()
-	cases := []struct {
+	for _, tc := range []struct {
 		name, token string
 		want        int
 	}{
-		{"viewer is refused", "viewertok", http.StatusForbidden},
-		{"admin is allowed", "admintok", http.StatusOK},
+		{"viewer can read safe settings", "viewertok", http.StatusOK},
+		{"admin can read settings", "admintok", http.StatusOK},
 		{"unauthenticated is refused", "", http.StatusUnauthorized},
-	}
-	for _, tc := range cases {
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/api/config", nil)
 			if tc.token != "" {
@@ -141,7 +139,37 @@ func TestGetConfigRequiresAdminInMemberMode(t *testing.T) {
 			if rec.Code != tc.want {
 				t.Fatalf("GET /api/config as %q = %d, want %d", tc.token, rec.Code, tc.want)
 			}
+			if tc.token != "viewertok" {
+				return
+			}
+			var got struct {
+				Fields      []cfgField      `json:"fields"`
+				Permissions map[string]bool `json:"permissions"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Permissions["admin"] {
+				t.Fatal("viewer response reports admin permission")
+			}
+			for _, f := range got.Fields {
+				if f.Editable {
+					t.Fatalf("viewer field %s is editable", f.Key)
+				}
+				if strings.Contains(f.Key, "endpoint") || strings.HasSuffix(f.Key, "key_env") || f.Key == "secret_bridge.agent_id" {
+					if f.Value != "" {
+						t.Fatalf("viewer field %s leaked value %q", f.Key, f.Value)
+					}
+				}
+			}
 		})
+	}
+	req := httptest.NewRequest("PUT", "/api/config", strings.NewReader(`{"updates":{}}`))
+	req.Header.Set("Authorization", "Bearer viewertok")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("viewer PUT /api/config = %d, want 403", rec.Code)
 	}
 }
 

@@ -47,9 +47,7 @@ func newMemberAuth(verify func(string) (int64, string, bool), scopesFor func(int
 	return &memberAuth{verify: verify, scopesFor: scopesFor, pathsFor: pathsFor, roleFor: roleFor, key: stableMemberKey()}
 }
 
-// Hub role order: owner > admin > member/curator > viewer. Curation is an
-// explicit pro capability and does not give curator browser administration.
-// Duplicated minimally here because
+// hub role order (owner > admin > member > viewer). Duplicated minimally here because
 // internal/web is the open core and must not import the pro internal/hub package; the
 // pro side hands us the role string via roleFor and we only need to rank it.
 func roleRank(role string) int {
@@ -58,7 +56,7 @@ func roleRank(role string) int {
 		return 4
 	case "admin":
 		return 3
-	case "member", "curator":
+	case "member":
 		return 2
 	case "viewer":
 		return 1
@@ -246,15 +244,22 @@ func (s *Server) SetMemberAuth(verify func(token string) (int64, string, bool), 
 // pending review-queue promote/discard are admin actions, mirroring the hub's own
 // admin-gated Integrations config. Returns false (and writes 403) when refused.
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if s.member == nil {
-		return true // standalone single-token viewer: the token is the gate
-	}
-	_, role, ok := s.member.member(r)
-	if !ok || roleRank(role) < roleRank("admin") {
+	if !s.isAdmin(r) {
 		http.Error(w, "forbidden: an admin role is required for this action", http.StatusForbidden)
 		return false
 	}
 	return true
+}
+
+// isAdmin distinguishes an authenticated member from a member allowed to manage
+// shared vault/service configuration. Standalone mode has one trusted operator token,
+// so it retains the historical admin-equivalent behavior.
+func (s *Server) isAdmin(r *http.Request) bool {
+	if s.member == nil {
+		return true
+	}
+	_, role, ok := s.member.member(r)
+	return ok && roleRank(role) >= roleRank("admin")
 }
 
 // memberGuard gates every non-open path on a resolved member, replacing the single

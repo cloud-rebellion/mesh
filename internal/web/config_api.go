@@ -182,20 +182,34 @@ func scrubEndpoints(c *meshcfg.Config) {
 	drop("secret_bridge.base_url", &c.SecretBridge.BaseURL)
 }
 
-// handleGetConfig returns the effective settings. Admin-gated: the values include the
-// internal embedding/rerank endpoints and the Dockyard secret-bridge URL plus agent id,
-// which is reconnaissance a read-only viewer has no reason to hold. A no-op in
-// standalone loopback mode, where the single token is already the gate.
+// handleGetConfig returns the effective settings. Members receive a redacted,
+// read-only view; admins receive the full operator configuration. A standalone
+// loopback viewer is the single trusted operator and keeps the full view.
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
 	fields, err := s.effectiveConfig(r.Context())
 	if err != nil {
 		http.Error(w, "config unavailable", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]any{"fields": fields})
+	admin := s.isAdmin(r)
+	if !admin {
+		// Members may use the Settings surface, but the shared config contains
+		// operator-only destinations and secret-slot names. Keep the values useful
+		// without exposing infrastructure metadata or implying that a member can
+		// change vault-wide behavior.
+		for i := range fields {
+			fields[i].Editable = false
+			switch fields[i].Key {
+			case "embedding.endpoint", "embedding.key_env", "rerank.endpoint", "rerank.key_env", "secret_bridge.base_url", "secret_bridge.key_env", "secret_bridge.agent_id":
+				fields[i].Value = ""
+				fields[i].Source = "admin"
+			}
+		}
+	}
+	writeJSON(w, map[string]any{
+		"fields":      fields,
+		"permissions": map[string]bool{"admin": admin},
+	})
 }
 
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {

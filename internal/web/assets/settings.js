@@ -29,7 +29,9 @@
     const dis = f.editable ? "" : "disabled";
     const badge = f.source === "env"
       ? '<span class="src env" title="set by an environment variable">env</span>'
-      : f.source === "file" ? '<span class="src file">file</span>' : '<span class="src def">default</span>';
+      : f.source === "file" ? '<span class="src file">file</span>'
+      : f.source === "admin" ? '<span class="src def" title="managed by an administrator">admin</span>'
+      : '<span class="src def">default</span>';
     const type = f.kind === "number" ? "number" : "text";
     const ph = f.kind === "keyref" ? "MESH_..._KEY" : "";
     const step = f.kind === "number" ? 'step="any" min="0"' : "";
@@ -54,6 +56,7 @@
     }
     const groups = {};
     (cfg.fields || []).forEach((f) => (groups[f.group] = groups[f.group] || []).push(f));
+    const canAdminister = !cfg.permissions || cfg.permissions.admin !== false;
 
     // One-line description per group, shown in the collapsed summary so a user knows
     // whether they need to open it at all.
@@ -74,6 +77,7 @@
       '<p class="panel-h">Configure</p>' +
       '<h1 class="panel-title">Settings</h1>' +
       '<p class="panel-lead">Mesh works with no setup. Everything below is optional tuning, grouped and collapsed. Open a section only if you need it. Settings set by an environment variable show an "env" badge and are read-only here.</p>' +
+      (canAdminister ? "" : '<p class="panel-lead">Some settings are managed by an administrator. Your account can view the effective safe settings, but cannot change shared vault configuration or reindex.</p>') +
       '<section class="set-group">' +
       '<h2 class="set-h">Index</h2>' +
       '<div class="set-status">' +
@@ -86,11 +90,17 @@
         (groupDesc[g] ? '<span class="set-acc-desc">' + esc(groupDesc[g]) + "</span>" : "") + "</summary>" +
         '<div class="set-acc-body">' + groups[g].map(row).join("") + "</div></details>"
       ).join("") +
-      '<div class="set-bar"><span class="set-note">Environment variables override these. Secrets stay in env vars; fields name the var, never the key.</span><button class="btn" id="set-save">Save changes</button></div>';
+      '<div class="set-bar"><span class="set-note">Environment variables override these. Secrets stay in env vars; fields name the var, never the key.</span>' +
+      (canAdminister ? '<button class="btn" id="set-save">Save changes</button>' : '') + '</div>';
 
     el.replaceChildren(inner);
 
-    inner.querySelector("#set-reindex").addEventListener("click", async (ev) => {
+    const reindexButton = inner.querySelector("#set-reindex");
+    if (!canAdminister) {
+      reindexButton.disabled = true;
+      reindexButton.title = "An administrator manages reindexing";
+    }
+    reindexButton.addEventListener("click", async (ev) => {
       ev.target.disabled = true;
       ev.target.textContent = "Reindexing...";
       try {
@@ -105,7 +115,9 @@
       }
     });
 
-    inner.querySelector("#set-save").addEventListener("click", async (ev) => {
+    const saveButton = inner.querySelector("#set-save");
+    if (!saveButton) return;
+    saveButton.addEventListener("click", async (ev) => {
       const updates = {};
       inner.querySelectorAll("input[data-key]:not([disabled])").forEach((i) => (updates[i.dataset.key] = i.value));
       ev.target.disabled = true;

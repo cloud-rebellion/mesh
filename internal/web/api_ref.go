@@ -67,7 +67,7 @@ func openAPISpec() map[string]any {
 		},
 		"paths": map[string]any{
 			"/api/status":      get("Index counts + active retrieval signals.", nil),
-			"/api/config":      mergeOps(get("Effective config per field (value, source, editable). Secrets are never returned. Admin role required in team mode.", nil), putConfigOp()),
+			"/api/config":      mergeOps(get("Effective config per field (value, source, editable). Members receive a redacted read-only view; shared configuration writes require an admin role. Secrets are never returned.", nil), putConfigOp()),
 			"/api/reindex":     map[string]any{"post": map[string]any{"summary": "Re-read the vault and rebuild the graph.", "responses": map[string]any{"200": map[string]any{"description": "ok"}}}},
 			"/api/search":      get("Fused retrieval; returns ranked cards.", []map[string]any{qparam("q", "query; at most "+strconv.Itoa(mcp.SearchQueryMaxBytes)+" bytes, read as at most 64 distinct terms", true), qparam("limit", "candidates per signal", false), qparam("budget", "token budget for packing", false)}),
 			"/api/note/{id}":   get("A note's raw markdown by frontmatter id.", []map[string]any{pparam("id", "frontmatter id")}),
