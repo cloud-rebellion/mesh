@@ -324,6 +324,12 @@ func (r *Retriever) enableVectorsFromInputs(ctx context.Context, emb meshcfg.Emb
 	if err := retrieveContextErr(ctx); err != nil {
 		return err
 	}
+	// Repair and diagnostics may explicitly request lexical-only retrieval when the
+	// configured embedding service is unavailable. This is process-local and does not
+	// mutate the vault's persisted configuration.
+	if in.getenv("MESH_DISABLE_EMBEDDINGS") == "1" {
+		return nil
+	}
 	endpoint, fromEnv := in.envOrFile("MESH_EMBED_ENDPOINT", emb.Endpoint)
 	model := in.envOr("MESH_EMBED_MODEL", emb.Model)
 	if endpoint == "" || model == "" {

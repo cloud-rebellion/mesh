@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bright-interaction/mesh/internal/relate"
 	"github.com/bright-interaction/mesh/internal/vault"
 )
 
@@ -248,6 +249,29 @@ func (s *Server) authoringSpec(ctx context.Context, a authoringArgs, forceType s
 		spec.DraftPath = snapshot.Path
 	}
 	return spec, nil
+}
+
+func (s *Server) deriveAuthoringRelated(ctx context.Context, spec *vault.NewNoteSpec) {
+	if spec == nil || spec.Status == "draft" || spec.UpdateID != "" {
+		return
+	}
+	g, rt := s.snapshot()
+	if g == nil || rt == nil {
+		return
+	}
+	var q strings.Builder
+	q.WriteString(strings.TrimSpace(spec.Title))
+	if text := strings.TrimSpace(spec.Summary); text != "" {
+		q.WriteString("\n")
+		q.WriteString(text)
+	}
+	for _, section := range spec.Sections {
+		if text := strings.TrimSpace(section); text != "" {
+			q.WriteString("\n")
+			q.WriteString(text)
+		}
+	}
+	spec.Related = relate.Derive(ctx, rt, g, q.String(), "", spec.Tags, 3)
 }
 
 func (s *Server) toolPrepareNote(ctx context.Context, raw json.RawMessage, validate bool) (any, *rpcError) {
