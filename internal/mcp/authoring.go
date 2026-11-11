@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/bright-interaction/mesh/internal/relate"
+	"github.com/bright-interaction/mesh/internal/retrieve"
 	"github.com/bright-interaction/mesh/internal/vault"
 )
 
@@ -252,7 +254,7 @@ func (s *Server) authoringSpec(ctx context.Context, a authoringArgs, forceType s
 }
 
 func (s *Server) deriveAuthoringRelated(ctx context.Context, spec *vault.NewNoteSpec) {
-	if spec == nil || spec.Status == "draft" || spec.UpdateID != "" {
+	if spec == nil || spec.Status == "draft" || spec.UpdateID != "" || spec.Related != nil {
 		return
 	}
 	g, rt := s.snapshot()
@@ -265,13 +267,39 @@ func (s *Server) deriveAuthoringRelated(ctx context.Context, spec *vault.NewNote
 		q.WriteString("\n")
 		q.WriteString(text)
 	}
-	for _, section := range spec.Sections {
+	keys := make([]string, 0, len(spec.Sections))
+	for key := range spec.Sections {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		section := spec.Sections[key]
 		if text := strings.TrimSpace(section); text != "" {
 			q.WriteString("\n")
 			q.WriteString(text)
 		}
 	}
-	spec.Related = relate.Derive(ctx, rt, g, q.String(), "", spec.Tags, 3)
+	opt := retrieve.Options{Limit: 16}
+	if sf := scopeFromCtx(ctx); sf != nil {
+		opt.AllowedScopes = sf.AllowedRead
+	}
+	cards, err := rt.Retrieve(ctx, q.String(), opt)
+	if err != nil {
+		return
+	}
+	// A ranked match alone is not enough for an automatic durable edge. Preserve
+	// the corroborated-link policy and check current file identity and audiences,
+	// just as for authored references. Stale or private candidates are skipped.
+	links := relate.SelectCorroborated(cards, func(id string) []string { return relate.TagsOf(g, id) }, "", spec.Tags, 16)
+	for _, id := range links {
+		candidate := vault.NewNoteSpec{Scope: spec.Scope, Related: []string{id}}
+		if s.validateAuthoringLinks(ctx, candidate) == nil {
+			spec.Related = append(spec.Related, id)
+			if len(spec.Related) == 3 {
+				break
+			}
+		}
+	}
 }
 
 func (s *Server) toolPrepareNote(ctx context.Context, raw json.RawMessage, validate bool) (any, *rpcError) {

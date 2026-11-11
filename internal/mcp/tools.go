@@ -1282,9 +1282,8 @@ func (s *Server) toolWrite(ctx context.Context, raw json.RawMessage, forceType s
 	if err := s.validateAuthoringLinks(prepareCtx, spec); err != nil {
 		return nil, &rpcError{Code: codeInvalidParams, Message: "unknown, invalid or inaccessible authoring reference"}
 	}
-	// Derive only after authored references have been validated. This prevents a
-	// stale candidate from turning a durable note creation into a validation error;
-	// derived candidates are best-effort and are checked again by the index on write.
+	// Derive after authored references have been validated. Candidate failures are
+	// skipped by derivation rather than making an otherwise valid write fail.
 	if a.Related == nil {
 		s.deriveAuthoringRelated(prepareCtx, &spec)
 	}
