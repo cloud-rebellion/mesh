@@ -17,9 +17,9 @@ func TestUntaggedAuthoringUsesOnlyReadableDistinctiveEntityEvidence(t *testing.T
 	root := t.TempDir()
 	seedVaultFiles(t, root)
 	files := map[string]string{
-		"crm":                "---\nid: crm\ntype: entity\ntitle: CRM\nscope: [dev]\n---\n# CRM\nTeam CRM application.\n",
-		"crm-peer":                 "---\nid: crm-peer\ntype: note\ntitle: CRM member administration\nscope: [dev]\n---\n# CRM member administration\nCRM member administration for the team.\n",
-		"crm-private":              "---\nid: crm-private\ntype: note\ntitle: CRM member administration private\nscope: [sales]\n---\n# CRM private notes\nCRM private notes.\n",
+		"meridiancrm":              "---\nid: meridiancrm\ntype: entity\ntitle: MeridianCRM\nscope: [dev]\n---\n# MeridianCRM\nTeam CRM application.\n",
+		"crm-peer":                 "---\nid: crm-peer\ntype: note\ntitle: MeridianCRM member administration\nscope: [dev]\n---\n# MeridianCRM member administration\nMeridianCRM member administration for the team.\n",
+		"crm-private":              "---\nid: crm-private\ntype: note\ntitle: MeridianCRM member administration private\nscope: [sales]\n---\n# MeridianCRM private notes\nMeridianCRM private notes.\n",
 		"other":                    "---\nid: other\ntype: note\ntitle: OtherProduct member administration\nscope: [dev]\n---\n# OtherProduct\nOtherProduct administration.\n",
 		"private-product":          "---\nid: private-product\ntype: entity\ntitle: PrivateProduct\nscope: [sales]\n---\n# PrivateProduct\nPrivate canonical entity record.\n",
 		"private-name-public-peer": "---\nid: private-name-public-peer\ntype: note\ntitle: PrivateProduct public mention\nscope: [dev]\n---\n# PrivateProduct public mention\nPrivateProduct is named without access to its private entity record.\n",
@@ -39,13 +39,13 @@ func TestUntaggedAuthoringUsesOnlyReadableDistinctiveEntityEvidence(t *testing.T
 		t.Fatal(err)
 	}
 	ctx := WithScopeFilter(context.Background(), &ScopeFilter{AllowedRead: map[string]bool{"dev": true}})
-	spec := vault.NewNoteSpec{Title: "CRM team administration", Summary: "CRM team administration knowledge", Scope: []string{"dev"}}
+	spec := vault.NewNoteSpec{Title: "MeridianCRM team administration", Summary: "MeridianCRM team administration knowledge", Scope: []string{"dev"}}
 	s.deriveAuthoringRelated(ctx, &spec)
 	if len(spec.Related) == 0 {
 		t.Fatal("untagged note stayed disconnected despite explicit readable entity evidence")
 	}
 	for _, id := range spec.Related {
-		if id != "crm" && id != "crm-peer" {
+		if id != "meridiancrm" && id != "crm-peer" {
 			t.Fatalf("unrelated or private edge derived: %v", spec.Related)
 		}
 	}
