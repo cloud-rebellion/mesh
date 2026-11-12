@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bright-interaction/mesh/internal/graph"
 	"github.com/bright-interaction/mesh/internal/relate"
 	"github.com/bright-interaction/mesh/internal/retrieve"
 	"github.com/bright-interaction/mesh/internal/vault"
@@ -50,10 +51,23 @@ type authoringArgs struct {
 	Scope           string            `json:"scope,omitempty"`
 }
 
+// MarshalJSON preserves explicit empty relation intent across compatibility,
+// draft and publish dispatch. Omission still requests automatic derivation.
+func (a authoringArgs) MarshalJSON() ([]byte, error) {
+	type wire authoringArgs
+	if a.Related == nil {
+		return json.Marshal(wire(a))
+	}
+	return json.Marshal(struct {
+		wire
+		Related []string `json:"related"`
+	}{wire: wire(a), Related: a.Related})
+}
+
 func authoringProperties() map[string]any {
 	str := map[string]any{"type": "string"}
 	list := map[string]any{"type": "array", "items": str, "maxItems": 32}
-	related := map[string]any{"type": "array", "items": str, "maxItems": vault.MaxAuthoringRelated}
+	related := map[string]any{"type": "array", "items": str, "maxItems": vault.MaxAuthoringRelated, "description": "Optional: omit for automatic corroborated links. Supply [] only to deliberately disable automatic linking; explicit lists are preserved."}
 	return map[string]any{
 		"type": str, "title": str, "template": str, "draft_id": str, "draft_revision": str, "update_id": str, "update_revision": str, "verified_at": str,
 		"template_version": map[string]any{"type": "integer", "minimum": 1},
@@ -65,7 +79,7 @@ func authoringProperties() map[string]any {
 		}},
 		"collections": list, "related": related, "supersedes": list, "tags": list,
 		"status": str, "severity": str, "author": str, "source": str,
-		"source_url": str, "confidence": str, "review_by": str, "scope": str,
+		"source_url": str, "confidence": str, "review_by": str, "scope": map[string]any{"type": "string", "description": "Access-control scope. Omit for your configured write scope/default, or use an existing authorized scope such as dev. Put task descriptions in summary/sections; do not invent descriptive scope labels."},
 	}
 }
 
@@ -82,7 +96,7 @@ func authoringToolSpecs() []map[string]any {
 	}
 
 	tools = append(tools, map[string]any{
-		"name": "mesh_author_note", "description": "Prepare, validate, save a draft or publish using one authoring format. Fetch mesh_note_template for the note schema. Existing templates need no note approval.",
+		"name": "mesh_author_note", "description": "Prepare, validate, draft or publish a note using an existing template. Fetch mesh_note_template. Omit related for automatic corroborated links; [] disables them. No per-note approval.",
 		"inputSchema": map[string]any{"type": "object", "required": []string{"action", "note"}, "additionalProperties": false, "properties": map[string]any{
 			"action": map[string]any{"type": "string", "enum": []string{"prepare", "validate", "draft", "publish"}},
 			"note":   map[string]any{"type": "object", "description": "Authoring object; its schema is returned by mesh_note_template."},
@@ -253,6 +267,32 @@ func (s *Server) authoringSpec(ctx context.Context, a authoringArgs, forceType s
 	return spec, nil
 }
 
+// currentRelatedCandidate confirms current file identity and caller visibility.
+// Evidence is content-only: an ACL label or a hidden HTML comment is not a topic.
+func (s *Server) currentRelatedCandidate(ctx context.Context, id string) (vault.Frontmatter, string, bool) {
+	var empty vault.Frontmatter
+	metadata, err := s.store.NoteMetadataFor(ctx, []string{"note:" + id})
+	if err != nil {
+		return empty, "", false
+	}
+	m, ok := metadata["note:"+id]
+	sf := scopeFromCtx(ctx)
+	if !ok || !filepath.IsLocal(m.Path) || (sf != nil && !vault.ScopeAllowsCSV(m.Scope, sf.AllowedRead)) {
+		return empty, "", false
+	}
+	data, err := readFetchFile(ctx, s.vaultRoot, m.Path, batchFetchFileBytes)
+	if err != nil || !fetchFileScopeAllowed(data, sf) || vault.UnterminatedFrontmatter(string(data)) {
+		return empty, "", false
+	}
+	header, body, _ := vault.SplitFrontmatter(string(data))
+	fm, _, err := vault.ParseFrontmatter([]byte(header))
+	if err != nil || fm.ID != id || vault.IsDraft(fm) {
+		return empty, "", false
+	}
+	text, _ := vault.StripComments(strings.Join([]string{fm.Title, fm.Summary, fm.Do, fm.Dont, fm.Why, body}, "\n"))
+	return *fm, text, true
+}
+
 func (s *Server) deriveAuthoringRelated(ctx context.Context, spec *vault.NewNoteSpec) {
 	if spec == nil || spec.Status == "draft" || spec.UpdateID != "" || spec.Related != nil {
 		return
@@ -283,15 +323,46 @@ func (s *Server) deriveAuthoringRelated(ctx context.Context, spec *vault.NewNote
 	if sf := scopeFromCtx(ctx); sf != nil {
 		opt.AllowedScopes = sf.AllowedRead
 	}
-	cards, err := rt.Retrieve(ctx, q.String(), opt)
-	if err != nil {
+	// A configured provider must not consume the entire publication deadline.
+	// Corroborated local retrieval can still derive safe links during an outage.
+	// Keep the same access filter and all final file/audience checks on both lanes.
+	searchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	cards, err := rt.Retrieve(searchCtx, q.String(), opt)
+	cancel()
+	if err != nil && ctx.Err() == nil {
+		local := opt
+		local.NoRerank = true
+		local.WeightFTS, local.WeightGraph, local.WeightVec = 0.7, 0.3, 0
+		localCtx, localCancel := context.WithTimeout(ctx, time.Second)
+		cards, err = rt.Retrieve(localCtx, q.String(), local)
+		localCancel()
+	}
+	if err != nil || ctx.Err() != nil {
 		return
 	}
 	// A ranked match alone is not enough for an automatic durable edge. Preserve
 	// the corroborated-link policy and check current file identity and audiences,
 	// just as for authored references. Stale or private candidates are skipped.
-	links := relate.SelectCorroborated(cards, func(id string) []string { return relate.TagsOf(g, id) }, "", spec.Tags, 16)
-	for _, id := range links {
+	sourceText, _ := vault.StripComments(q.String())
+	namedEvidence := relate.EntityEvidence(sourceText, g, func(node *graph.Node) (string, bool) {
+		fm, _, ok := s.currentRelatedCandidate(ctx, node.NoteID)
+		return fm.Title, ok && string(fm.Type) == "entity"
+	})
+	seen := make(map[string]bool)
+	for _, card := range cards {
+		id := strings.TrimSpace(card.NoteID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		fm, text, ok := s.currentRelatedCandidate(ctx, id)
+		if !ok {
+			continue
+		}
+		tagEvidence := relate.SelectCorroborated([]retrieve.Card{card}, func(string) []string { return []string(fm.Tags) }, "", spec.Tags, 1)
+		if len(tagEvidence) == 0 && !namedEvidence(id, text) {
+			continue
+		}
 		candidate := vault.NewNoteSpec{Scope: spec.Scope, Related: []string{id}}
 		if s.validateAuthoringLinks(ctx, candidate) == nil {
 			spec.Related = append(spec.Related, id)

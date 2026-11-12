@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bright-interaction/mesh/internal/shellpath"
+
 	"github.com/bright-interaction/mesh/internal/index"
 )
 
@@ -116,7 +118,7 @@ func TestDoctorFindsCorruptionOutsideTheSchemaPage(t *testing.T) {
 	if err == nil {
 		t.Fatalf("doctor exited 0 over a corrupt data page:\n%s", out)
 	}
-	for _, want := range []string{"status: BROKEN", "index database is corrupt", "mesh index " + dir} {
+	for _, want := range []string{"status: BROKEN", "index database is corrupt", "mesh index " + shellpath.Quote(dir)} {
 		if !strings.Contains(out, want) {
 			t.Errorf("doctor output missing %q:\n%s", want, out)
 		}

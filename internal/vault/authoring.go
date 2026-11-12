@@ -85,7 +85,12 @@ func NormalizeSpec(in NewNoteSpec) (NewNoteSpec, error) {
 	} else {
 		spec.Tags = uniqueStrings(in.Tags)
 	}
-	spec.Related = append([]string(nil), in.Related...)
+	// nil means derive when appropriate; an explicit empty list means none.
+	if in.Related == nil {
+		spec.Related = nil
+	} else {
+		spec.Related = append([]string{}, in.Related...)
+	}
 	spec.Supersedes = append([]string(nil), in.Supersedes...)
 	spec.Scope = append([]string(nil), in.Scope...)
 	spec.Sections = make(map[string]string, len(in.Sections))

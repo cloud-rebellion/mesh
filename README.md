@@ -892,7 +892,7 @@ Inspect and maintain:
 | `mesh lint [vault]` | Frontmatter / links / filenames (non-zero exit for CI) |
 | `mesh doctor [vault]` | Index freshness (drift), counts, health. Non-zero if the index is stale or any note is invisible to search |
 | `mesh health [vault]` | Knowledge lifecycle: dead source refs, overdue reviews, contradictions, plus notes missing from the index |
-| `mesh structure [vault]` | Grade the vault's organization; `--wire-orphans` proposes only shared-tag-corroborated links by default |
+| `mesh structure [vault]` | Grade the vault's organization; `--wire-orphans` proposes links corroborated by shared tags or distinct named entities by default |
 | `mesh flywheel [vault]` | Write-back reuse metrics: does written-back knowledge get used again? |
 | `mesh economics [vault]` | Content-free retrieval economics: call rate, accounted tokens, cache/fallbacks and search-to-fetch choices |
 | `mesh rerank <setup\|status\|disable>` | Reversible local-only subscription rerank setup for an existing MCP registration |
@@ -900,6 +900,30 @@ Inspect and maintain:
 | `mesh scope backfill` | Stamp an explicit access scope on notes that have none (which notes a given member may see; dry run unless `--apply`) |
 | `mesh eval <cases.json>` | Gate-1 retrieval measurement vs FTS baselines; `--require-rerank-win` also gates rerank economics |
 | `mesh tune <cases.json>` | Learn fusion weights from labelled queries (validated on held-out) |
+
+Authored notes can acquire up to three corroborated relations when the author omits
+`related`. Mesh tries the configured retrieval engine, then falls back to its local
+index within a bounded time budget. Candidate notes must be current, published,
+and visible to every audience of the source note. An explicit `related: []` opts
+out; explicit links are retained and validated. Publication receipts report the
+saved relation outcome, including an unconfirmed index acknowledgement, so a
+client can reconcile a saved note before retrying publication.
+
+For existing disconnected notes, preview local repair with:
+
+```sh
+mesh structure /path/to/vault --wire-orphans --local-only
+```
+
+Review the proposals, take a backup, and quiesce all vault writers before adding
+`--apply`. This path uses the local lexical/graph index without loading providers
+or subscriptions. It preserves note bodies, identities, other metadata, drafts,
+explicit opt-outs and access scopes. Notes without corroborating evidence remain
+unmatched. Advanced operator repair can also consume a fresh private independently
+verified source/run manifest through `--verified-evidence` and
+`--evidence-sha256`; the manifest pins each source note's current content and scopes
+and expires after five minutes. It is a trusted operator input, not a model's
+unverified similarity ranking.
 
 View:
 

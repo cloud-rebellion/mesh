@@ -1382,6 +1382,26 @@ func (s *Server) toolWrite(ctx context.Context, raw json.RawMessage, forceType s
 		notePath = filepath.Base(res.Path)
 	}
 	out := map[string]any{"id": res.ID, "path": notePath, "when": res.When, "todo": res.TODOs, "status": spec.Status, "template": spec.Template, "template_version": spec.TemplateVersion, "revision": res.Revision}
+	// Report relation confirmation independently from note durability and index
+	// acknowledgement. A saved note without confirmed links must not invite a
+	// duplicate publication, or silently imply that graph linking succeeded.
+	related := append([]string{}, spec.Related...)
+	relationState := "explicit"
+	switch {
+	case spec.Status == "draft":
+		relationState = "draft"
+	case spec.UpdateID != "" && a.Related == nil:
+		relationState = "preserved"
+	case a.Related == nil && len(related) > 0:
+		relationState = "derived"
+	case a.Related == nil:
+		relationState = "unconfirmed"
+	}
+	out["related"] = related
+	out["relation_state"] = relationState
+	if relationState == "unconfirmed" {
+		out["relation_notice"] = "The note is saved; no automatic relation was confirmed. Review this existing note rather than retrying publication."
+	}
 	if spec.UpdateID != "" {
 		out["updated"] = true
 		out["previous_revision"] = spec.UpdateRevision

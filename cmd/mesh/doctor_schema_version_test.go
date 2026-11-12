@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bright-interaction/mesh/internal/shellpath"
 )
 
 // ageIndexForTest rewrites an index into the shape a previously released Mesh left behind:
@@ -52,7 +54,7 @@ func TestDoctorReportsAnIndexFromAnOlderMesh(t *testing.T) {
 	if err == nil {
 		t.Errorf("doctor exited 0 against an index it cannot read correctly\n%s", out)
 	}
-	for _, want := range []string{"status: BROKEN", "mesh index " + dir} {
+	for _, want := range []string{"status: BROKEN", "mesh index " + shellpath.Quote(dir)} {
 		if !strings.Contains(out, want) {
 			t.Errorf("doctor output missing %q:\n%s", want, out)
 		}

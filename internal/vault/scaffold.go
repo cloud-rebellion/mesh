@@ -463,6 +463,9 @@ func planNoteContext(ctx context.Context, root string, spec NewNoteSpec, claimed
 		ReviewBy: strings.TrimSpace(spec.ReviewBy), ImportedAt: strings.TrimSpace(spec.ImportedAt),
 		Scope: normalizeTags(spec.Scope),
 	}
+	if spec.Related != nil && fm.Related == nil {
+		fm.Related = StringList{}
+	}
 	for _, block := range spec.Blocks {
 		fm.Blocks = append(fm.Blocks, BlockMetadata{Template: block.Template, Version: block.Version, ID: block.ID})
 	}
@@ -563,6 +566,11 @@ func renderNote(fm *Frontmatter, by string) (string, error) {
 	y, err := yaml.Marshal(fm)
 	if err != nil {
 		return "", err
+	}
+	// omitempty would erase the author's deliberate no-relations decision.
+	// The encoder omits this zero-length field, so append its fixed YAML value.
+	if fm.Related != nil && len(fm.Related) == 0 {
+		y = append(y, []byte("related: []\n")...)
 	}
 	var b strings.Builder
 	b.WriteString("---\n")

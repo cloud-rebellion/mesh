@@ -4,12 +4,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/bright-interaction/mesh/internal/graph"
 	"github.com/bright-interaction/mesh/internal/index"
 	"github.com/bright-interaction/mesh/internal/relate"
 	"github.com/bright-interaction/mesh/internal/retrieve"
@@ -23,14 +25,25 @@ import (
 // the vault structure standard. It complements `mesh lint` (frontmatter validity) and
 // `mesh health` (knowledge lifecycle): validity, organization, lifecycle.
 func structureCmd() *cobra.Command {
-	var verbose, wireOrphans, allowUncorroboratedTop, apply, fillBodies, fillTimelines bool
-	var repoPath string
+	var verbose, wireOrphans, localOnly, allowUncorroboratedTop, apply, fillBodies, fillTimelines bool
+	var repoPath, evidenceFile, evidenceDigest string
 	c := &cobra.Command{
 		Use:   "structure [vault]",
 		Short: "Grade the vault's organization: types, connectivity, tier-0, maps",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := vaultArg(args)
+			var verified *verifiedRelationEvidence
+			if evidenceFile != "" || evidenceDigest != "" {
+				if !wireOrphans || !localOnly || allowUncorroboratedTop {
+					return fmt.Errorf("verified evidence requires --wire-orphans --local-only and corroborated links")
+				}
+				var err error
+				verified, err = loadVerifiedRelationEvidence(cmd.Context(), root, evidenceFile, evidenceDigest)
+				if err != nil {
+					return err
+				}
+			}
 			files, err := vault.Walk(root)
 			if err != nil {
 				return err
@@ -51,7 +64,7 @@ func structureCmd() *cobra.Command {
 			rep := index.AnalyzeStructure(g, parsed, parseErrs)
 
 			if wireOrphans {
-				return wireOrphanNotes(cmd, root, rep, apply, allowUncorroboratedTop)
+				return wireOrphanNotes(cmd, root, rep, apply, allowUncorroboratedTop, localOnly, verified)
 			}
 			if fillBodies {
 				return fillNoteBodies(root, files, apply)
@@ -118,9 +131,12 @@ func structureCmd() *cobra.Command {
 	}
 	c.Flags().BoolVar(&verbose, "verbose", false, "list every finding with its note path")
 	c.Flags().BoolVar(&wireOrphans, "wire-orphans", false, "propose `related:` links for every orphan note (dry run unless --apply)")
+	c.Flags().BoolVar(&localOnly, "local-only", false, "with --wire-orphans, use only the local lexical/graph index without loading providers or subscriptions")
 	c.Flags().BoolVar(&allowUncorroboratedTop, "allow-uncorroborated-top", false, "with --wire-orphans, accept the top retrieval hit without a shared tag (unsafe for bulk apply)")
 	c.Flags().BoolVar(&fillBodies, "fill-bodies", false, "retired: use reviewed mesh templates migration-preview instead")
 	c.Flags().BoolVar(&fillTimelines, "fill-timelines", false, "build a post-mortem's \"What happened\" from its own dates and the commit ids it names (dry run unless --apply)")
+	c.Flags().StringVar(&evidenceFile, "verified-evidence", "", "with --wire-orphans --local-only, a fresh private operator-verified source/run evidence manifest; writers must be quiesced")
+	c.Flags().StringVar(&evidenceDigest, "evidence-sha256", "", "exact SHA256 of the independently verified evidence manifest")
 	c.Flags().StringVar(&repoPath, "repo", "", "with --fill-timelines, a git repository to resolve commit ids against, so the timeline carries real committer times and subjects")
 	c.Flags().BoolVar(&apply, "apply", false, "with --wire-orphans or --fill-bodies, write the changes into the notes")
 	return c
@@ -236,7 +252,7 @@ func fillNoteBodies(root string, files []string, apply bool) error {
 //
 // Notes that already declare `related` are skipped by BackfillRelatedFile, so running
 // this twice is safe and the second run reports nothing to do.
-func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport, apply, allowUncorroboratedTop bool) error {
+func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport, apply, allowUncorroboratedTop, localOnly bool, verified *verifiedRelationEvidence) error {
 	var orphans []index.StructureFinding
 	for _, f := range rep.Findings {
 		if f.Kind == "orphan" {
@@ -263,7 +279,10 @@ func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport,
 	if err != nil {
 		return err
 	}
-	rt := retrieve.NewFromEnv(store, ig)
+	rt, err := retrieve.NewFromEnvContextWithOptions(cmd.Context(), store, ig, retrieve.ConstructionOptions{LocalOnly: localOnly})
+	if err != nil {
+		return fmt.Errorf("construct orphan repair retrieval: %w", err)
+	}
 
 	if !apply {
 		fmt.Printf("%d orphan(s); proposing up to 3 corroborated links each (dry run, pass --apply to write)\n", len(orphans))
@@ -281,24 +300,65 @@ func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport,
 	// non-zero exit possible at all, so it has to come first.
 	var changed, noLinks, alreadyRelated, failed int
 	for _, f := range orphans {
+		if err := cmd.Context().Err(); err != nil {
+			return err
+		}
 		path := filepath.Join(root, f.Path)
-		id := strings.TrimSuffix(filepath.Base(f.Path), filepath.Ext(f.Path))
-		// The slug IS the title, hyphenated: Slugify built it from the title when the
-		// note was scaffolded, so it is the closest thing to the note's own words that
-		// is available here without re-reading the file.
-		query := strings.ReplaceAll(id, "-", " ")
+		sourceNote, err := currentRepairSource(cmd.Context(), root, f.Path)
+		if err != nil {
+			fmt.Printf("  !! %s: cannot verify current source: %v\n", f.Path, err)
+			failed++
+			continue
+		}
+		id := sourceNote.ID
+		metadata, err := store.NoteMetadataFor(cmd.Context(), []string{"note:" + id})
+		m, exists := metadata["note:"+id]
+		if err != nil || !exists || filepath.Clean(m.Path) != filepath.Clean(f.Path) {
+			fmt.Printf("  !! %s: current source identity differs from the index\n", f.Path)
+			failed++
+			continue
+		}
+		query := strings.TrimSpace(sourceNote.Title)
+		if query == "" {
+			query = strings.ReplaceAll(id, "-", " ")
+		}
 		var links []string
-		if allowUncorroboratedTop {
-			links = relate.Derive(cmd.Context(), rt, ig, query, id, relate.TagsOf(ig, id), 3)
+		if verified != nil {
+			links, err = verified.links(cmd.Context(), id, f.Path)
+			if err != nil {
+				return fmt.Errorf("verified repair stopped after %d durable changes: %w", changed, err)
+			}
 		} else {
-			links = relate.DeriveCorroborated(cmd.Context(), rt, ig, query, id, relate.TagsOf(ig, id), 3)
+			if allowUncorroboratedTop {
+				links = relate.Derive(cmd.Context(), rt, ig, query, id, sourceNote.Tags, 3)
+			} else {
+				links = orphanEvidenceCandidates(cmd.Context(), root, f.Path, sourceNote, store, ig, rt, query)
+			}
+			links, err = filterOrphanLinkAudiences(cmd.Context(), root, f.Path, store, links, allowUncorroboratedTop, ig)
+			if err != nil {
+				fmt.Printf("  !! %s: cannot verify current repair audiences: %v\n", f.Path, err)
+				failed++
+				continue
+			}
 		}
 		if len(links) == 0 {
 			noLinks++
 			continue
 		}
+		preservation := verified
+		if preservation == nil {
+			preservation, err = captureRelatedRepair(cmd.Context(), root, id, f.Path, links)
+			if err != nil {
+				return fmt.Errorf("repair stopped before writing source after %d durable changes: %w", changed, err)
+			}
+		}
 		res, err := vault.BackfillRelatedFile(path, links, !apply)
 		if err != nil {
+			if apply {
+				failed++
+				fmt.Printf("  !! %s: %v\n\nfailed on %d note(s); stopped after %d completed write(s)\n", f.Path, err, failed, changed)
+				return fmt.Errorf("repair write outcome requires review after %d completed changes: %w", changed, err)
+			}
 			fmt.Printf("  !! %s: %v\n", f.Path, err)
 			failed++
 			continue
@@ -306,6 +366,11 @@ func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport,
 		if !res.Changed {
 			alreadyRelated++
 			continue
+		}
+		if apply {
+			if err := preservation.recordWrite(cmd.Context(), id); err != nil {
+				return fmt.Errorf("repair wrote durable links and requires review: %w", err)
+			}
 		}
 		changed++
 		fmt.Printf("  %s\n", f.Path)
@@ -329,4 +394,87 @@ func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport,
 		return fmt.Errorf("%d of %d orphan(s) failed to wire", failed, len(orphans))
 	}
 	return nil
+}
+
+func currentRepairSource(ctx context.Context, root, sourcePath string) (*vault.Frontmatter, error) {
+	data, err := vault.ReadConfinedFileContext(ctx, root, sourcePath, 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	header, _, had := vault.SplitFrontmatter(string(data))
+	source, _, err := vault.ParseFrontmatter([]byte(header))
+	if err != nil || !had || vault.UnterminatedFrontmatter(string(data)) || vault.IsDraft(source) {
+		return nil, fmt.Errorf("source identity/lifecycle is not current")
+	}
+	if source.ID == "" {
+		source.ID = strings.ToLower(strings.TrimSuffix(filepath.Base(sourcePath), filepath.Ext(sourcePath)))
+	}
+	return source, nil
+}
+
+// filterOrphanLinkAudiences treats retrieval as candidate generation. Durable
+// repair edges must be justified by current files and readable by every audience
+// of their source. Stale graph scopes, tags, paths and drafts cannot grant links.
+// Operators must quiesce vault writers during a bulk apply; these reads are not a
+// multi-file transaction or authority to change a note's access partitions.
+func filterOrphanLinkAudiences(ctx context.Context, root, sourcePath string, store *index.Store, links []string, allowTop bool, g *graph.Graph) ([]string, error) {
+	if len(links) == 0 {
+		return nil, nil
+	}
+	source, err := currentRepairSource(ctx, root, sourcePath)
+	if err != nil {
+		return nil, err
+	}
+	named := orphanEntityEvidence(ctx, root, sourcePath, source, store, g)
+	ids := make([]string, 0, len(links))
+	for _, id := range links {
+		ids = append(ids, "note:"+id)
+	}
+	metadata, err := store.NoteMetadataFor(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	var safe []string
+	for i, id := range links {
+		m, ok := metadata["note:"+id]
+		if !ok || id == source.ID || !filepath.IsLocal(m.Path) || m.Path == sourcePath {
+			continue
+		}
+		data, err := vault.ReadConfinedFileContext(ctx, root, m.Path, 1<<20)
+		if err != nil || vault.UnterminatedFrontmatter(string(data)) {
+			continue
+		}
+		header, body, had := vault.SplitFrontmatter(string(data))
+		target, _, err := vault.ParseFrontmatter([]byte(header))
+		if target != nil && target.ID == "" {
+			target.ID = strings.ToLower(strings.TrimSuffix(filepath.Base(m.Path), filepath.Ext(m.Path)))
+		}
+		if err != nil || !had || target.ID != id || vault.IsDraft(target) || !relationAudienceAllows(source, target) {
+			continue
+		}
+		if !allowTop || i > 0 {
+			evidence := relate.SelectCorroborated([]retrieve.Card{{NoteID: id}}, func(string) []string { return []string(target.Tags) }, source.ID, source.Tags, 1)
+			clean, _ := vault.StripComments(target.Title + "\n" + body)
+			if len(evidence) == 0 && !named(id, clean) {
+				continue
+			}
+		}
+		safe = append(safe, id)
+		if len(safe) == 3 {
+			break
+		}
+	}
+	return safe, nil
+}
+
+func relationAudienceAllows(source, target *vault.Frontmatter) bool {
+	if source == nil || target == nil {
+		return false
+	}
+	for _, audience := range source.EffectiveScopes() {
+		if !vault.ScopeAllows(target.EffectiveScopes(), map[string]bool{audience: true}) {
+			return false
+		}
+	}
+	return true
 }
