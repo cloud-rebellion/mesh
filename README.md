@@ -912,8 +912,13 @@ client can reconcile a saved note before retrying publication.
 For existing disconnected notes, preview local repair with:
 
 ```sh
-mesh structure /path/to/vault --wire-orphans --local-only
+mesh structure /path/to/vault --wire-orphans --local-only --repair-workers 4
 ```
+
+`--repair-workers` accepts 1..4 local candidate readers (default 1). Draft notes
+are preserved and skipped. Candidate calculation can run concurrently; source and
+target checks are repeated before each sequential write. Verified evidence replay
+also stays sequential.
 
 Review the proposals, take a backup, and quiesce all vault writers before adding
 `--apply`. This path uses the local lexical/graph index without loading providers

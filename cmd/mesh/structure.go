@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -27,12 +28,19 @@ import (
 func structureCmd() *cobra.Command {
 	var verbose, wireOrphans, localOnly, allowUncorroboratedTop, apply, fillBodies, fillTimelines bool
 	var repoPath, evidenceFile, evidenceDigest string
+	var repairWorkers int
 	c := &cobra.Command{
 		Use:   "structure [vault]",
 		Short: "Grade the vault's organization: types, connectivity, tier-0, maps",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root := vaultArg(args)
+			if repairWorkers < 1 || repairWorkers > 4 {
+				return fmt.Errorf("repair workers must be between 1 and 4")
+			}
+			if repairWorkers > 1 && (!wireOrphans || !localOnly || allowUncorroboratedTop) {
+				return fmt.Errorf("parallel repair requires --wire-orphans --local-only and corroborated links")
+			}
 			var verified *verifiedRelationEvidence
 			if evidenceFile != "" || evidenceDigest != "" {
 				if !wireOrphans || !localOnly || allowUncorroboratedTop {
@@ -64,7 +72,7 @@ func structureCmd() *cobra.Command {
 			rep := index.AnalyzeStructure(g, parsed, parseErrs)
 
 			if wireOrphans {
-				return wireOrphanNotes(cmd, root, rep, apply, allowUncorroboratedTop, localOnly, verified)
+				return wireOrphanNotes(cmd, root, rep, apply, allowUncorroboratedTop, localOnly, verified, repairWorkers)
 			}
 			if fillBodies {
 				return fillNoteBodies(root, files, apply)
@@ -132,6 +140,7 @@ func structureCmd() *cobra.Command {
 	c.Flags().BoolVar(&verbose, "verbose", false, "list every finding with its note path")
 	c.Flags().BoolVar(&wireOrphans, "wire-orphans", false, "propose `related:` links for every orphan note (dry run unless --apply)")
 	c.Flags().BoolVar(&localOnly, "local-only", false, "with --wire-orphans, use only the local lexical/graph index without loading providers or subscriptions")
+	c.Flags().IntVar(&repairWorkers, "repair-workers", 1, "with --wire-orphans --local-only, 1..4 ordinary candidate readers; verified replay and writes stay sequential")
 	c.Flags().BoolVar(&allowUncorroboratedTop, "allow-uncorroborated-top", false, "with --wire-orphans, accept the top retrieval hit without a shared tag (unsafe for bulk apply)")
 	c.Flags().BoolVar(&fillBodies, "fill-bodies", false, "retired: use reviewed mesh templates migration-preview instead")
 	c.Flags().BoolVar(&fillTimelines, "fill-timelines", false, "build a post-mortem's \"What happened\" from its own dates and the commit ids it names (dry run unless --apply)")
@@ -252,7 +261,7 @@ func fillNoteBodies(root string, files []string, apply bool) error {
 //
 // Notes that already declare `related` are skipped by BackfillRelatedFile, so running
 // this twice is safe and the second run reports nothing to do.
-func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport, apply, allowUncorroboratedTop, localOnly bool, verified *verifiedRelationEvidence) error {
+func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport, apply, allowUncorroboratedTop, localOnly bool, verified *verifiedRelationEvidence, workers int) error {
 	var orphans []index.StructureFinding
 	for _, f := range rep.Findings {
 		if f.Kind == "orphan" {
@@ -291,6 +300,33 @@ func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport,
 		}
 		fmt.Println()
 	}
+	// Candidate generation is read-only. Collect results in source order, then
+	// re-read every source and target before the existing sequential write path.
+	var plans []orphanCandidatePlan
+	if workers > 1 && verified == nil {
+		fmt.Printf("planning candidates with %d local readers; writes remain sequential\n", workers)
+		plans, err = planOrphanCandidates(cmd.Context(), orphans, workers, func(ctx context.Context, f index.StructureFinding) (string, []string, error) {
+			source, err := currentRepairSource(ctx, root, f.Path)
+			if err != nil {
+				return "", nil, err
+			}
+			metadata, err := store.NoteMetadataFor(ctx, []string{"note:" + source.ID})
+			m, ok := metadata["note:"+source.ID]
+			if err != nil || !ok || filepath.Clean(m.Path) != filepath.Clean(f.Path) {
+				return source.ID, nil, fmt.Errorf("current source identity differs from the index")
+			}
+			query := strings.TrimSpace(source.Title)
+			if query == "" {
+				query = strings.ReplaceAll(source.ID, "-", " ")
+			}
+			return source.ID, orphanEvidenceCandidates(ctx, root, f.Path, source, store, ig, rt, query), nil
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("candidate planning complete for %d source(s)\n", len(plans))
+	}
+
 	// One counter used to absorb three unrelated outcomes: "retrieval found no
 	// candidate links" (benign, the note simply has no neighbours yet), "the note
 	// already declares related" (benign, and the whole point of the idempotence), and
@@ -298,13 +334,17 @@ func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport,
 	// because the third was buried in it the function could fail on every note, print
 	// each failure, and still return nil. Splitting the counters is what makes a
 	// non-zero exit possible at all, so it has to come first.
-	var changed, noLinks, alreadyRelated, failed int
-	for _, f := range orphans {
+	var changed, noLinks, alreadyRelated, skippedDrafts, failed int
+	for position, f := range orphans {
 		if err := cmd.Context().Err(); err != nil {
 			return err
 		}
 		path := filepath.Join(root, f.Path)
 		sourceNote, err := currentRepairSource(cmd.Context(), root, f.Path)
+		if errors.Is(err, errRepairDraft) {
+			skippedDrafts++
+			continue
+		}
 		if err != nil {
 			fmt.Printf("  !! %s: cannot verify current source: %v\n", f.Path, err)
 			failed++
@@ -329,7 +369,15 @@ func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport,
 				return fmt.Errorf("verified repair stopped after %d durable changes: %w", changed, err)
 			}
 		} else {
-			if allowUncorroboratedTop {
+			if plans != nil {
+				plan := plans[position]
+				if plan.err != nil || plan.sourceID != id {
+					failed++
+					fmt.Printf("  !! %s: candidate planning or source identity changed; no write\n", f.Path)
+					continue
+				}
+				links = plan.links
+			} else if allowUncorroboratedTop {
 				links = relate.Derive(cmd.Context(), rt, ig, query, id, sourceNote.Tags, 3)
 			} else {
 				links = orphanEvidenceCandidates(cmd.Context(), root, f.Path, sourceNote, store, ig, rt, query)
@@ -384,6 +432,9 @@ func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport,
 	}
 	fmt.Printf("\n%s %d note(s), skipped %d (%d with no corroborated candidate links, %d already declaring related)\n",
 		verb, changed, noLinks+alreadyRelated, noLinks, alreadyRelated)
+	if skippedDrafts > 0 {
+		fmt.Printf("preserved %d draft note(s)\n", skippedDrafts)
+	}
 	if failed > 0 {
 		fmt.Printf("failed on %d note(s)\n", failed)
 	}
@@ -403,8 +454,11 @@ func currentRepairSource(ctx context.Context, root, sourcePath string) (*vault.F
 	}
 	header, _, had := vault.SplitFrontmatter(string(data))
 	source, _, err := vault.ParseFrontmatter([]byte(header))
-	if err != nil || !had || vault.UnterminatedFrontmatter(string(data)) || vault.IsDraft(source) {
+	if err != nil || source == nil || !had || vault.UnterminatedFrontmatter(string(data)) {
 		return nil, fmt.Errorf("source identity/lifecycle is not current")
+	}
+	if vault.IsDraft(source) {
+		return nil, errRepairDraft
 	}
 	if source.ID == "" {
 		source.ID = strings.ToLower(strings.TrimSuffix(filepath.Base(sourcePath), filepath.Ext(sourcePath)))
