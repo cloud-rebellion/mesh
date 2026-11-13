@@ -1962,6 +1962,7 @@ func scopeCmd() *cobra.Command {
 		Short: "Access-scope tools (label notes for the team scope model)",
 	}
 	c.AddCommand(scopeBackfillCmd())
+	c.AddCommand(scopeNormalizeSharedCmd())
 	return c
 }
 

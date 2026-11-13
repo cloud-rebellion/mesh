@@ -302,6 +302,7 @@ func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport,
 	}
 	// Candidate generation is read-only. Collect results in source order, then
 	// re-read every source and target before the existing sequential write path.
+	candidateReader := newRepairCandidateReader(root, store)
 	var plans []orphanCandidatePlan
 	if workers > 1 && verified == nil {
 		fmt.Printf("planning candidates with %d local readers; writes remain sequential\n", workers)
@@ -319,7 +320,7 @@ func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport,
 			if query == "" {
 				query = strings.ReplaceAll(source.ID, "-", " ")
 			}
-			return source.ID, orphanEvidenceCandidates(ctx, root, f.Path, source, store, ig, rt, query), nil
+			return source.ID, orphanEvidenceCandidates(ctx, root, f.Path, source, store, ig, rt, query, candidateReader), nil
 		})
 		if err != nil {
 			return err
@@ -380,7 +381,7 @@ func wireOrphanNotes(cmd *cobra.Command, root string, rep index.StructureReport,
 			} else if allowUncorroboratedTop {
 				links = relate.Derive(cmd.Context(), rt, ig, query, id, sourceNote.Tags, 3)
 			} else {
-				links = orphanEvidenceCandidates(cmd.Context(), root, f.Path, sourceNote, store, ig, rt, query)
+				links = orphanEvidenceCandidates(cmd.Context(), root, f.Path, sourceNote, store, ig, rt, query, candidateReader)
 			}
 			links, err = filterOrphanLinkAudiences(cmd.Context(), root, f.Path, store, links, allowUncorroboratedTop, ig)
 			if err != nil {
@@ -480,6 +481,7 @@ func filterOrphanLinkAudiences(ctx context.Context, root, sourcePath string, sto
 		return nil, err
 	}
 	named := orphanEntityEvidence(ctx, root, sourcePath, source, store, g)
+	contextEvidence := relate.ContextEvidence(g, source.Tags)
 	ids := make([]string, 0, len(links))
 	for _, id := range links {
 		ids = append(ids, "note:"+id)
@@ -507,9 +509,13 @@ func filterOrphanLinkAudiences(ctx context.Context, root, sourcePath string, sto
 			continue
 		}
 		if !allowTop || i > 0 {
+			var node *graph.Node
+			if g != nil {
+				node, _ = g.Node("note:" + id)
+			}
 			evidence := relate.SelectCorroborated([]retrieve.Card{{NoteID: id}}, func(string) []string { return []string(target.Tags) }, source.ID, source.Tags, 1)
 			clean, _ := vault.StripComments(target.Title + "\n" + body)
-			if len(evidence) == 0 && !named(id, clean) {
+			if len(evidence) == 0 && !contextEvidence(node, repairContextDescriptor(target)) && !named(id, clean) {
 				continue
 			}
 		}

@@ -77,6 +77,29 @@ access scope. A link cannot expose a target to an audience that cannot read it.
 MCP checks the current source file as well as indexed permissions. No speculative
 semantic match is silently turned into an asserted relationship.
 
+Hosted publication accepts only registered access scopes, including when the team
+uses unrestricted reads. Omit `scope` for the configured default rather than
+inventing a product name, task description or topic label. Existing publications
+and draft resumptions retain their recorded scopes. Put topics in `tags` and use
+collections for product navigation.
+
+For new MCP publications that omit `related`, declared shared tags and unique
+canonical entity ID/title tags provide candidates independently of semantic search
+rank. Every candidate must remain readable to each source audience. Explicit
+relations (including `[]`), updates and drafts retain the author's choice. Ordinary
+short words in prose do not identify products by themselves. This is publication
+behavior; it does not continuously rewrite old vault notes.
+
+An operator correcting historical topic labels in a shared vault can use
+`mesh scope normalize-shared`. This separate migration requires explicit shared-vault
+authorization, a verified configuration with only registered `dev`, no folder ACLs,
+a backup and an exclusive writer window. First create a fresh private `--plan`,
+then pin its SHA256 and use `--apply --manifest --manifest-sha256`, with
+`--shared-vault` in both steps. It moves original scalar/list scope values to
+`scope_migration.original_scope`, preserves all body bytes and other metadata,
+and stops on drift. Reindex after migration before preparing fresh relation repairs.
+Do not use it to merge intentionally separate access audiences.
+
 ## Maintain existing documents
 
 When a schema, specification, method or product state changes, maintain its existing

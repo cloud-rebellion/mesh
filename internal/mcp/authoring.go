@@ -254,6 +254,9 @@ func (s *Server) authoringSpec(ctx context.Context, a authoringArgs, forceType s
 	if err != nil {
 		return spec, &rpcError{Code: codeInvalidParams, Message: err.Error()}
 	}
+	if err := validateAuthoringScopeRegistry(ctx, spec); err != nil {
+		return spec, &rpcError{Code: codeInvalidParams, Message: err.Error()}
+	}
 	if update != nil {
 		spec.UpdatePath = update.Path
 	}
@@ -293,12 +296,53 @@ func (s *Server) currentRelatedCandidate(ctx context.Context, id string) (vault.
 	return *fm, text, true
 }
 
+func authoringRelationAudienceAllows(sourceScopes []string, target *vault.Frontmatter) bool {
+	if target == nil {
+		return false
+	}
+	source := vault.Frontmatter{Scope: sourceScopes}
+	for _, audience := range source.EffectiveScopes() {
+		if !vault.ScopeAllows(target.EffectiveScopes(), map[string]bool{audience: true}) {
+			return false
+		}
+	}
+	return true
+}
+
+func relatedContextDescriptor(fm vault.Frontmatter) relate.ContextCandidate {
+	return relate.ContextCandidate{ID: fm.ID, Title: fm.Title, Tags: fm.Tags, Entity: fm.Type == vault.TypeEntity}
+}
+
 func (s *Server) deriveAuthoringRelated(ctx context.Context, spec *vault.NewNoteSpec) {
 	if spec == nil || spec.Status == "draft" || spec.UpdateID != "" || spec.Related != nil {
 		return
 	}
 	g, rt := s.snapshot()
 	if g == nil || rt == nil {
+		return
+	}
+	// Declared topics are an independent candidate lane. Search's top results
+	// must not hide a compatible peer or a canonical entity declared by a tag.
+	// Filter current caller/source audiences before capping this lane, then
+	// re-read selected candidates and retain the ordinary final link validator.
+	contextEvidence := relate.ContextEvidence(g, spec.Tags)
+	directCtx, directCancel := context.WithTimeout(ctx, 2*time.Second)
+	direct := relate.ContextCandidates(directCtx, g, "", spec.Tags, 3, func(node *graph.Node) (relate.ContextCandidate, bool) {
+		fm, _, ok := s.currentRelatedCandidate(directCtx, node.NoteID)
+		return relatedContextDescriptor(fm), ok && authoringRelationAudienceAllows(spec.Scope, &fm)
+	})
+	directCancel()
+	for _, id := range direct {
+		node, exists := g.Node("note:" + id)
+		fm, _, ok := s.currentRelatedCandidate(ctx, id)
+		if !exists || !ok || !contextEvidence(node, relatedContextDescriptor(fm)) {
+			continue
+		}
+		if s.validateAuthoringLinks(ctx, vault.NewNoteSpec{Scope: spec.Scope, Related: []string{id}}) == nil {
+			spec.Related = append(spec.Related, id)
+		}
+	}
+	if len(spec.Related) == 3 || ctx.Err() != nil {
 		return
 	}
 	var q strings.Builder
@@ -349,6 +393,9 @@ func (s *Server) deriveAuthoringRelated(ctx context.Context, spec *vault.NewNote
 		return fm.Title, ok && string(fm.Type) == "entity"
 	})
 	seen := make(map[string]bool)
+	for _, id := range spec.Related {
+		seen[id] = true
+	}
 	for _, card := range cards {
 		id := strings.TrimSpace(card.NoteID)
 		if id == "" || seen[id] {
@@ -359,8 +406,9 @@ func (s *Server) deriveAuthoringRelated(ctx context.Context, spec *vault.NewNote
 		if !ok {
 			continue
 		}
+		node, exists := g.Node("note:" + id)
 		tagEvidence := relate.SelectCorroborated([]retrieve.Card{card}, func(string) []string { return []string(fm.Tags) }, "", spec.Tags, 1)
-		if len(tagEvidence) == 0 && !namedEvidence(id, text) {
+		if len(tagEvidence) == 0 && (!exists || !contextEvidence(node, relatedContextDescriptor(fm))) && !namedEvidence(id, text) {
 			continue
 		}
 		candidate := vault.NewNoteSpec{Scope: spec.Scope, Related: []string{id}}
@@ -493,14 +541,8 @@ func (s *Server) validateAuthoringLinks(ctx context.Context, spec vault.NewNoteS
 		if err != nil || vault.UnterminatedFrontmatter(string(data)) || fm.ID != id {
 			return fmt.Errorf("invalid reference")
 		}
-		audiences := spec.Scope
-		if len(audiences) == 0 {
-			audiences = []string{vault.DefaultScope}
-		}
-		for _, audience := range audiences {
-			if !vault.ScopeAllows(fm.EffectiveScopes(), map[string]bool{audience: true}) {
-				return fmt.Errorf("reference audience mismatch")
-			}
+		if !authoringRelationAudienceAllows(spec.Scope, fm) {
+			return fmt.Errorf("reference audience mismatch")
 		}
 		if anchor != "" {
 			if !AuthoringReferenceAnchorValid(data, anchor) {
