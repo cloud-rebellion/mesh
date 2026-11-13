@@ -46,6 +46,8 @@ type verifiedRelationEdge struct {
 	Kind           string   `json:"evidence_kind"`
 	Terms          []string `json:"terms"`
 	TargetRepoPath string   `json:"target_repo_path,omitempty"`
+	ReviewReason   string   `json:"review_reason,omitempty"`
+	TargetTerms    []string `json:"target_terms,omitempty"`
 }
 
 type verifiedRelationNote struct {
@@ -108,6 +110,15 @@ func loadVerifiedRelationEvidence(ctx context.Context, root, name, digest string
 	if decoder.Decode(&document) != nil || decoder.Decode(new(any)) != io.EOF || document.Schema != 1 || len(document.Candidates) > 2000 {
 		return refused()
 	}
+	// Keep presence separate from zero values: review-only fields are forbidden
+	// on native/code attestations even if an operator supplied null or empty data.
+	// The strict typed decode above still rejects every unknown field.
+	var fields struct {
+		Candidates []map[string]json.RawMessage `json:"candidates"`
+	}
+	if json.Unmarshal(data, &fields) != nil || len(fields.Candidates) != len(document.Candidates) {
+		return refused()
+	}
 	age := time.Since(document.VerifiedAt)
 	if document.VerifiedAt.IsZero() || age > 5*time.Minute || age < -30*time.Second {
 		return refused()
@@ -122,11 +133,25 @@ func loadVerifiedRelationEvidence(ctx context.Context, root, name, digest string
 	}
 	plan := &verifiedRelationEvidence{root: canonical, rows: map[string][]verifiedRelationEdge{}, notes: map[string]*verifiedRelationNote{}, completed: map[string]string{}}
 	seen := map[string]bool{}
-	for _, edge := range document.Candidates {
+	for i, edge := range document.Candidates {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		if edge.Source == "" || edge.Target == "" || edge.Source == edge.Target || !evidenceSHA.MatchString(edge.SourceSHA) || !evidenceSHA.MatchString(edge.TargetSHA) || len(edge.Terms) == 0 || len(edge.Terms) > 8 {
+			return refused()
+		}
+		reviewed := edge.Kind == "reviewed-context"
+		hasReason, hasTargetTerms := false, false
+		for name := range fields.Candidates[i] {
+			// encoding/json matches known field names case-insensitively.
+			hasReason = hasReason || strings.EqualFold(name, "review_reason")
+			hasTargetTerms = hasTargetTerms || strings.EqualFold(name, "target_terms")
+		}
+		if reviewed {
+			if !validRelationReviewReason(edge.ReviewReason) || len(edge.TargetTerms) == 0 || len(edge.TargetTerms) > 8 || edge.TargetRepoPath != "" {
+				return refused()
+			}
+		} else if hasReason || hasTargetTerms {
 			return refused()
 		}
 		source, err := plan.note(ctx, edge.Source, edge.SourcePath, edge.SourceSHA)
@@ -141,7 +166,7 @@ func loadVerifiedRelationEvidence(ctx context.Context, root, name, digest string
 			return refused()
 		}
 		peer := edge.Kind == "native-run-peer"
-		if !peer && (target.fm.Type != vault.TypeEntity || target.fm.RepoPath == "" || target.fm.RepoPath != edge.TargetRepoPath) {
+		if !peer && !reviewed && (target.fm.Type != vault.TypeEntity || target.fm.RepoPath == "" || target.fm.RepoPath != edge.TargetRepoPath) {
 			return refused()
 		}
 		if peer && edge.TargetRepoPath != "" {
@@ -149,6 +174,9 @@ func loadVerifiedRelationEvidence(ctx context.Context, root, name, digest string
 		}
 		visibleSource, _ := vault.StripComments(source.fm.Title + "\n" + source.body)
 		visibleTarget, _ := vault.StripComments(target.fm.Title + "\n" + target.body)
+		if reviewed && declaredRelationValue(source.raw["related"]) {
+			return refused()
+		}
 		valid := false
 		for _, term := range edge.Terms {
 			if term == "" || len(term) > 240 || strings.ContainsAny(term, "\x00\r\n") {
@@ -167,6 +195,13 @@ func loadVerifiedRelationEvidence(ctx context.Context, root, name, digest string
 				if !evidenceTool.MatchString(term) {
 					return refused()
 				}
+			case "reviewed-context":
+				// This is a concrete operator/curator attestation, never a ranked
+				// suggestion or a product-name alias inferred by the CLI. Require
+				// every supplied visible excerpt, not a single surviving fragment.
+				if !validReviewedRelationExcerpt(term) || !visibleEvidenceTerm(visibleSource, term) {
+					return refused()
+				}
 			default:
 				return refused()
 			}
@@ -176,6 +211,13 @@ func loadVerifiedRelationEvidence(ctx context.Context, root, name, digest string
 		}
 		if !valid {
 			return refused()
+		}
+		if reviewed {
+			for _, term := range edge.TargetTerms {
+				if !validReviewedRelationExcerpt(term) || !visibleEvidenceTerm(visibleTarget, term) {
+					return refused()
+				}
+			}
 		}
 		if declaredRelationValue(source.raw["related"]) {
 			continue
@@ -195,6 +237,37 @@ func loadVerifiedRelationEvidence(ctx context.Context, root, name, digest string
 		plan.rows[id] = rows
 	}
 	return plan, nil
+}
+
+func validRelationReviewReason(reason string) bool {
+	trimmed := strings.TrimSpace(reason)
+	return utf8.ValidString(reason) && utf8.RuneCountInString(trimmed) >= 80 && utf8.RuneCountInString(reason) <= 1200 &&
+		len(strings.Fields(trimmed)) >= 8 && !strings.ContainsRune(reason, '\x00') && !vault.Unfilled(trimmed)
+}
+
+func validReviewedRelationExcerpt(term string) bool {
+	if !utf8.ValidString(term) || utf8.RuneCountInString(term) < 16 || len(term) > 240 ||
+		term != strings.TrimSpace(term) || strings.ContainsAny(term, "\x00\r\n") {
+		return false
+	}
+	// A long ordinary word is still not a contextual excerpt. More than one
+	// word component, a qualified identifier or an internal CamelCase/digit
+	// boundary supplies concrete shape without a product-name allowlist.
+	parts := strings.FieldsFunc(term, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	if len(parts) > 1 {
+		return true
+	}
+	var previous rune
+	letters, digits := false, false
+	for _, r := range term {
+		if unicode.IsLower(previous) && unicode.IsUpper(r) {
+			return true
+		}
+		letters = letters || unicode.IsLetter(r)
+		digits = digits || unicode.IsDigit(r)
+		previous = r
+	}
+	return letters && digits
 }
 
 func declaredRelationValue(value any) bool {

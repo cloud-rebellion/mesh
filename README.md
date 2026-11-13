@@ -898,12 +898,15 @@ Inspect and maintain:
 | `mesh rerank <setup\|status\|disable>` | Reversible local-only subscription rerank setup for an existing MCP registration |
 | `mesh guards <list\|suggest>` | Turn gotchas into candidate pre-commit guards (knowledge to enforcement) |
 | `mesh scope backfill` | Stamp an explicit access scope on notes that have none (which notes a given member may see; dry run unless `--apply`) |
+| `mesh scope normalize-shared` | Operator-authorized shared-dev correction of legacy topic labels, with a fresh pinned plan and retained original scope provenance; see `docs/AUTHORING.md` |
 | `mesh eval <cases.json>` | Gate-1 retrieval measurement vs FTS baselines; `--require-rerank-win` also gates rerank economics |
 | `mesh tune <cases.json>` | Learn fusion weights from labelled queries (validated on held-out) |
 
 Authored notes can acquire up to three corroborated relations when the author omits
-`related`. Mesh tries the configured retrieval engine, then falls back to its local
-index within a bounded time budget. Candidate notes must be current, published,
+`related`. Declared tags find compatible peers and unique canonical entity ID/title
+anchors independently of search rank. Mesh also tries the configured retrieval
+engine, then falls back to its local index within bounded time budgets.
+Candidate notes must be current, published,
 and visible to every audience of the source note. An explicit `related: []` opts
 out; explicit links are retained and validated. Publication receipts report the
 saved relation outcome, including an unconfirmed index acknowledgement, so a
@@ -925,10 +928,18 @@ Review the proposals, take a backup, and quiesce all vault writers before adding
 or subscriptions. It preserves note bodies, identities, other metadata, drafts,
 explicit opt-outs and access scopes. Notes without corroborating evidence remain
 unmatched. Advanced operator repair can also consume a fresh private independently
-verified source/run manifest through `--verified-evidence` and
+verified source/run or explicitly reviewed context manifest through `--verified-evidence` and
 `--evidence-sha256`; the manifest pins each source note's current content and scopes
 and expires after five minutes. It is a trusted operator input, not a model's
 unverified similarity ranking.
+
+The operator-only `reviewed-context` evidence kind retains exact source and target
+hashes, a concrete 80..1200-character review reason and matching visible excerpts
+from both notes. Every excerpt must contain context and be at least 16 characters;
+each is bounded to 240 bytes. It can repair historical non-template bodies without
+rewriting their prose or other metadata. Every source audience must still be able
+to read the target. Drafts and existing authored relation choices are refused.
+Neither MCP/HTTP note input nor automatic ranking supplies this attestation.
 
 View:
 
