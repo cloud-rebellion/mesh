@@ -61,6 +61,39 @@
   }
 
   // --- Login (HttpOnly cookie session) ----------------------------------------
+  const signoutButton = document.getElementById("mesh-signout");
+  const signoutStatus = document.getElementById("mesh-signout-status");
+  let signingOut = false;
+
+  function renderSignout(status) {
+    if (signoutButton) signoutButton.hidden = Mesh.readOnlyViewer || !status || status.authRequired !== true;
+    if (signoutStatus && (!signoutButton || signoutButton.hidden)) signoutStatus.hidden = true;
+  }
+
+  if (signoutButton) signoutButton.addEventListener("click", async () => {
+    if (signingOut) return;
+    signingOut = true;
+    signoutButton.disabled = true;
+    signoutButton.textContent = "Signing out...";
+    if (signoutStatus) signoutStatus.hidden = true;
+    try {
+      const response = await fetch("api/logout", { method: "POST", credentials: "same-origin" });
+      if (response.status !== 204) throw new Error("Sign out was not confirmed");
+      // A fresh document drops the previous account's in-memory notes and any
+      // launcher query/fragment. The clean app entry shows normal sign-in.
+      location.replace(new URL(document.baseURI).pathname);
+    } catch (_) {
+      signoutButton.disabled = false;
+      signoutButton.textContent = "Sign out";
+      if (signoutStatus) {
+        signoutStatus.textContent = "Could not confirm sign out. Please try again.";
+        signoutStatus.hidden = false;
+      }
+    } finally {
+      signingOut = false;
+    }
+  });
+
   // POST the access key; the server validates it constant-time and sets the cookie.
   async function submitKey(key) {
     const res = await fetch("api/login", {
@@ -73,6 +106,7 @@
   }
 
   function showLogin() {
+    renderSignout(null);
     const el = document.getElementById("login");
     if (!el || !el.classList.contains("hidden")) return;
     el.classList.remove("hidden");
@@ -318,6 +352,7 @@
     try {
       const s = await Mesh.api("/api/status");
       Mesh.status = s;
+      renderSignout(s);
       renderUpdate(s);
       const c = s.counts || {};
       const sig = s.signals || {};
@@ -332,6 +367,7 @@
     } catch (e) {
       foot.textContent = "";
       Mesh.status = null;
+      renderSignout(null);
       renderUpdate(null);
       const login = document.getElementById("login");
       if (updateDialog && updateDialog.open && login && !login.classList.contains("hidden")) updateDialog.close();

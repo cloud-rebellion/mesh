@@ -75,7 +75,7 @@ html, body {
   cursor: pointer;
 }
 #update-dismiss { position: absolute; right: 10px; font-size: 20px; text-decoration: none; }
-.mesh-update-entry {
+.mesh-update-entry, .mesh-signout {
   width: calc(100% - 20px);
   margin: 0 10px;
   padding: 9px;
@@ -87,6 +87,8 @@ html, body {
   font-size: 13px;
   cursor: pointer;
 }
+.mesh-signout { margin-top: 6px; }
+.mesh-signout:disabled { opacity: .6; cursor: wait; }
 .mesh-update-dialog {
   width: min(560px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
@@ -107,7 +109,7 @@ html, body {
 .mesh-update-actions a { color: var(--fg); }
 .mesh-update-actions button { padding: 7px 12px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-2); color: var(--fg); font: inherit; cursor: pointer; }
 .mesh-update-actions button:disabled { opacity: .6; cursor: wait; }
-.mesh-update-web :focus-visible, .mesh-update-entry:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+.mesh-update-web :focus-visible, .mesh-update-entry:focus-visible, .mesh-signout:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
 body.update-available #bar { top: 58px; }
 body.update-available .explorer { top: 110px; }
 body.update-available .panel-inner { padding-top: 72px; }
